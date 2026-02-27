@@ -64,7 +64,7 @@ endif()
 
 set(ASC_MULTI_TURN_ENCODER_TARGET "")
 if(ENABLE_MULTI_TURN_ENCODER)
-  set(MODBUS_DEVICES_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../modbus_devices")
+set(MODBUS_DEVICES_DIR "${CMAKE_CURRENT_LIST_DIR}/../../modbus_devices")
   set(SENSOR_DRIVERS_INCLUDE_DIR "${MODBUS_DEVICES_DIR}/sensor_drivers/include")
   set(LIBMODBUS_DIR "${MODBUS_DEVICES_DIR}/third_party_libraries/libmodbus")
 
