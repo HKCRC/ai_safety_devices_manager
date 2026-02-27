@@ -12,8 +12,8 @@ target_include_directories(ai_safety_controller_application PUBLIC
   "${CMAKE_CURRENT_LIST_DIR}/../core/drivers/multi_turn_encoder/include"
   "${CMAKE_CURRENT_LIST_DIR}/../core/drivers/solar/include"
   "${CMAKE_CURRENT_LIST_DIR}/../core/drivers/spd_lidar/include"
-  "${CMAKE_CURRENT_LIST_DIR}/../../../modbus_devices/sensor_drivers/include"
-  "${CMAKE_CURRENT_LIST_DIR}/../../../modbus_devices/third_party_libraries/libmodbus"
+  "${CMAKE_CURRENT_LIST_DIR}/../../modbus_devices/sensor_drivers/include"
+  "${CMAKE_CURRENT_LIST_DIR}/../../modbus_devices/third_party_libraries/libmodbus"
 )
 
 target_link_libraries(ai_safety_controller_application PUBLIC
