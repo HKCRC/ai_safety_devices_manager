@@ -1,0 +1,2 @@
+# ai_safety_devices_manager
+AISafety相关设备管理
