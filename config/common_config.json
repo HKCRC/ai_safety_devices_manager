@@ -1,0 +1,90 @@
+{
+  "version": {
+    "major": 0,
+    "minor": 1,
+    "patch": 0
+  },
+  "build": {
+    "ENABLE_BATTERY": true,
+    "ENABLE_HOIST_HOOK": true,
+    "ENABLE_IO_RELAY": true,
+    "ENABLE_MULTI_TURN_ENCODER": true,
+    "ENABLE_SOLAR": true,
+    "ENABLE_SPD_LIDAR": true
+  },
+  "runtime": {
+    "battery": {
+      "enable": false,
+      "module_ip": "192.168.1.12",
+      "module_port": 502,
+      "module_slave_id": 3,
+      "battery_slave_id": 2,
+      "query_hz": 1.0
+    },
+    "solar": {
+      "enable": false,
+      "module_ip": "192.168.1.12",
+      "module_port": 502,
+      "module_slave_id": 3,
+      "solar_slave_id": 4,
+      "query_hz": 1.0
+    },
+    "io_relay": {
+      "enable": false,
+      "module_ip": "192.168.1.12",
+      "module_port": 502,
+      "module_slave_id": 3,
+      "query_hz": 1.0
+    },
+    "hoist_hook": {
+      "enable": false,
+      "module_ip": "127.0.0.1",
+      "module_port": 2502,
+      "hook_slave_id": 3,
+      "power_slave_id": 4,
+      "query_hz": 1.0
+    },
+    "multi_turn_encoder": {
+      "_comment": "transport=rtu 使用串口参数；transport=tcp 使用 ip/port 参数",
+      "enable": false,
+      "transport": "tcp",
+      "device": "/dev/ttyUSB0",
+      "baud": 9600,
+      "parity": "N",
+      "data_bit": 8,
+      "stop_bit": 1,
+      "slave": 1,
+      "ip": "127.0.0.1",
+      "port": 1502,
+      "query_hz": 10.0
+    },
+    "spd_lidar": {
+      "_comment": "多实例配置：mode=server 时监听 local_ip/local_port；mode=client 时从 local_ip/local_port 连接到 device_ip/device_port",
+      "query_hz": 1.0,
+      "instances": [
+        {
+          "id": "front",
+          "enable": true,
+          "mode": "client",
+          "local_ip": "127.0.0.1",
+          "local_port": 8234,
+          "device_ip": "127.0.0.1",
+          "device_port": 8234,
+          "role": "front_obstacle",
+          "priority": 1
+        },
+        {
+          "id": "rear",
+          "enable": true,
+          "mode": "client",
+          "local_ip": "127.0.0.1",
+          "local_port": 8235,
+          "device_ip": "127.0.0.1",
+          "device_port": 8235,
+          "role": "rear_obstacle",
+          "priority": 2
+        }
+      ]
+    }
+  }
+}

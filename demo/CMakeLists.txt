@@ -1,0 +1,7 @@
+add_executable(ai_safety_controller_demo
+  ai_safety_controller_demo.cpp
+)
+
+target_link_libraries(ai_safety_controller_demo PRIVATE
+  ai_safety_controller_application
+)
