@@ -47,10 +47,10 @@
     "multi_turn_encoder": {
       "_comment": "transport=rtu 使用串口参数；transport=tcp 使用 ip/port 参数",
       "enable": false,
-      "transport": "tcp",
+      "transport": "rtu",
       "device": "/dev/ttyUSB0",
       "baud": 9600,
-      "parity": "N",
+      "parity": "E",
       "data_bit": 8,
       "stop_bit": 1,
       "slave": 1,
@@ -64,7 +64,7 @@
       "instances": [
         {
           "id": "front",
-          "enable": true,
+          "enable": false,
           "mode": "client",
           "local_ip": "127.0.0.1",
           "local_port": 8234,
@@ -75,7 +75,7 @@
         },
         {
           "id": "rear",
-          "enable": true,
+          "enable": false,
           "mode": "client",
           "local_ip": "127.0.0.1",
           "local_port": 8235,
