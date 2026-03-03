@@ -9,6 +9,12 @@ namespace solar {
 
 class SolarCore {
  public:
+  struct ChargeStatusSample {
+    bool ok = false;
+    uint16_t charge_status_word = 0;
+    double battery_current_a = 0.0;
+  };
+
   SolarCore();
   SolarCore(const std::string& module_ip,
             uint16_t module_port,
@@ -18,6 +24,8 @@ class SolarCore {
 
   void printRegisterGroups() const;
   void querySolarInfo(const std::string& info_type);
+  bool readChargeStatusSample(ChargeStatusSample* out);
+  static bool hasChargeFault(uint16_t charge_status_word);
   void scanSolarSlaveIds(int start_id, int end_id);
   void genericRead(uint16_t address, uint16_t quantity, int function_code);
   void genericWrite(uint16_t address, uint16_t value, int function_code);

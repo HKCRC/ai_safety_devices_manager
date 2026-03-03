@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ai_safety_controller/common/device_status.hpp"
 #include "ai_safety_controller/common/status.hpp"
 #include "ai_safety_controller/sensor_factory/sensor_factory.hpp"
 
@@ -75,8 +76,15 @@ class Interface {
 
   struct HoistHookDefaults {
     bool enable = true;
+    bool print_status = true;
+    std::string transport = "tcp";
     std::string module_ip = "192.168.1.12";
     int module_port = 502;
+    std::string device = "/dev/ttyUSB0";
+    int baud = 9600;
+    char parity = 'N';
+    int data_bit = 8;
+    int stop_bit = 1;
     int hook_slave_id = 3;
     int power_slave_id = 4;
     double query_hz = 0.0;
@@ -105,7 +113,7 @@ class Interface {
     std::string device_ip = "192.168.0.7";
     int device_port = 8234;
     std::string role;
-    int priority = 0;
+    double vertical_angle_to_vertical_deg = 0.0;
   };
 
   Interface();
@@ -128,6 +136,8 @@ class Interface {
   std::vector<std::string> enabledSensors() const;
   Status dispatchCommand(const std::string& sensor, const std::vector<std::string>& args);
   std::vector<std::string> availableCommands(const std::string& sensor) const;
+  void setDeviceStatus(const DeviceStatus& data);
+  DeviceStatus getDeviceStatus() const;
 
 #ifdef ASC_ENABLE_BATTERY
   battery::BatteryCore* battery();
@@ -182,6 +192,7 @@ class Interface {
 #endif
 #ifdef ASC_ENABLE_SOLAR
   Status querySolar(const std::vector<std::string>& args);
+  void updateSolarChargeStateFromDriver();
 #endif
 #ifdef ASC_ENABLE_HOIST_HOOK
   Status queryHoistHook(const std::vector<std::string>& args);
@@ -220,7 +231,9 @@ class Interface {
   std::unordered_map<std::string, std::string> latest_query_output_;
   std::unordered_map<std::string, Status> latest_query_status_;
   std::unordered_map<std::string, std::chrono::system_clock::time_point> latest_query_time_;
+  DeviceStatus latest_device_status_;
   mutable std::mutex snapshot_mutex_;
+  mutable std::mutex device_status_mutex_;
   mutable std::mutex output_mutex_;
 
 #ifdef ASC_ENABLE_BATTERY

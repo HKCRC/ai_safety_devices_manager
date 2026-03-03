@@ -378,9 +378,12 @@ void BatteryCore::queryBatteryInfo(const std::string& info_type) {
       else charge_state = "静置";
     }
 
-    const uint16_t remain_time_raw = values[5];
-    const int remain_hours = static_cast<int>((remain_time_raw >> 8) & 0xFF);
-    const int remain_minutes = static_cast<int>(remain_time_raw & 0xFF);
+    const uint16_t discharge_time_raw = values[7];  // 0x0007
+    const uint16_t charge_time_raw = values[8];     // 0x0008
+    const auto format_minutes = [](uint16_t raw, const char* idle_text) -> std::string {
+      if (raw == 0xFFFF) return idle_text;
+      return std::to_string(raw) + "分钟";
+    };
     std::cout << "✅ 电池关键信息：\n";
     std::cout << "  充电状态: " << charge_state;
     if (has_charge_mos) std::cout << " (MOS=" << charge_mos << ")";
@@ -388,9 +391,12 @@ void BatteryCore::queryBatteryInfo(const std::string& info_type) {
     std::cout << "  SOC: " << std::fixed << std::setprecision(2) << (values[0] * 0.01) << "%\n";
     std::cout << "  总电流: " << std::fixed << std::setprecision(2) << current_a << "A\n";
     std::cout << "  总电压: " << std::fixed << std::setprecision(2) << (values[2] * 0.01) << "V\n";
-    std::cout << "  剩余使用时间: " << remain_hours << "小时" << remain_minutes
-              << "分钟 (raw=0x" << std::hex << std::uppercase << std::setw(4)
-              << std::setfill('0') << remain_time_raw << std::dec << ")\n";
+    std::cout << "  剩余放电时间: " << format_minutes(discharge_time_raw, "非放电状态")
+              << " (raw=0x" << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
+              << discharge_time_raw << std::dec << ")\n";
+    std::cout << "  剩余充电时间: " << format_minutes(charge_time_raw, "非充电状态")
+              << " (raw=0x" << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
+              << charge_time_raw << std::dec << ")\n";
   } else if (info_type == "cell") {
     std::vector<uint8_t> response;
     if (!sendBatteryRead(0x03, 0x0010, 16, battery_slave_id_, &response)) return;

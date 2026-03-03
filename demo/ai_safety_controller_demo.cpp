@@ -186,7 +186,8 @@ int main() {
                   << " device_ip=" << lidars[i].device_ip
                   << " device_port=" << lidars[i].device_port;
         if (!lidars[i].role.empty()) std::cout << " role=" << lidars[i].role;
-        std::cout << " priority=" << lidars[i].priority << "\n";
+        std::cout << " vertical_angle_to_vertical_deg=" << lidars[i].vertical_angle_to_vertical_deg
+                  << "\n";
       }
       continue;
     }

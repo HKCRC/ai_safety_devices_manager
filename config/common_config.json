@@ -37,7 +37,15 @@
       "query_hz": 1.0
     },
     "hoist_hook": {
-      "enable": false,
+      "_comment": "transport=rtu 直连串口 Modbus RTU（9600 8N1）；transport=tcp 使用 module_ip/module_port；print_status 关闭后仅错误信息会打印",
+      "enable": true,
+      "print_status": false,
+      "transport": "rtu",
+      "device": "/dev/ttyUSB0",
+      "baud": 9600,
+      "parity": "N",
+      "data_bit": 8,
+      "stop_bit": 1,
       "module_ip": "127.0.0.1",
       "module_port": 2502,
       "hook_slave_id": 3,
@@ -71,7 +79,7 @@
           "device_ip": "127.0.0.1",
           "device_port": 8234,
           "role": "front_obstacle",
-          "priority": 1
+          "vertical_angle_to_vertical_deg": 0.0
         },
         {
           "id": "rear",
@@ -82,7 +90,7 @@
           "device_ip": "127.0.0.1",
           "device_port": 8235,
           "role": "rear_obstacle",
-          "priority": 2
+          "vertical_angle_to_vertical_deg": 0.0
         }
       ]
     }

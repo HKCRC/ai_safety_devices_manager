@@ -271,6 +271,39 @@ int32_t SolarCore::parseSigned32FromLH(uint16_t low_word, uint16_t high_word) co
   return static_cast<int32_t>(raw);
 }
 
+bool SolarCore::readChargeStatusSample(ChargeStatusSample* out) {
+  if (!out) return false;
+  out->ok = false;
+  out->charge_status_word = 0;
+  out->battery_current_a = 0.0;
+
+  std::vector<uint8_t> status_resp;
+  if (!sendSolarRead(0x04, 0x3201, 1, solar_slave_id_, &status_resp)) return false;
+  std::vector<uint16_t> status_values;
+  if (!parseRegisterResponse(status_resp, 0x04, 1, &status_values) || status_values.empty()) return false;
+
+  std::vector<uint8_t> batt_curr_resp;
+  if (!sendSolarRead(0x04, 0x331B, 2, solar_slave_id_, &batt_curr_resp)) return false;
+  std::vector<uint16_t> batt_curr_values;
+  if (!parseRegisterResponse(batt_curr_resp, 0x04, 2, &batt_curr_values) || batt_curr_values.size() < 2) {
+    return false;
+  }
+
+  out->charge_status_word = status_values[0];
+  out->battery_current_a = parseSigned32FromLH(batt_curr_values[0], batt_curr_values[1]) / 100.0;
+  out->ok = true;
+  return true;
+}
+
+bool SolarCore::hasChargeFault(uint16_t charge_status_word) {
+  // EPEVER-like charge status word: bits 8~13 are charger fault flags.
+  const bool has_charge_fault_bits = (charge_status_word & 0x3F00u) != 0;
+  // Bits 14~15 represent PV input voltage status, 0b11 means input voltage error.
+  const uint16_t pv_input_voltage_state = static_cast<uint16_t>((charge_status_word >> 14) & 0x3u);
+  const bool pv_input_voltage_error = (pv_input_voltage_state == 0x3u);
+  return has_charge_fault_bits || pv_input_voltage_error;
+}
+
 void SolarCore::printRegisterGroups() const {
   std::cout << "\n📚 太阳能文档寄存器分组（可读可写范围）\n";
   for (size_t i = 0; i < register_groups_.size(); ++i) {
@@ -397,44 +430,36 @@ void SolarCore::querySolarInfo(const std::string& info_type) {
       std::cout << "❌ 太阳能基础信息读取失败\n";
     }
   } else if (info_type == "status") {
-    std::vector<uint8_t> pv_resp;
-    std::vector<uint8_t> load_resp;
-    if (!sendSolarRead(0x04, 0x3100, 4, solar_slave_id_, &pv_resp)) {
-      std::cout << "❌ 太阳能状态信息读取失败：光伏阵列实时量读取失败\n";
-      return;
-    }
-    if (!sendSolarRead(0x04, 0x310C, 4, solar_slave_id_, &load_resp)) {
-      std::cout << "❌ 太阳能状态信息读取失败：负载实时量读取失败\n";
+    std::vector<uint8_t> status_resp;
+    if (!sendSolarRead(0x04, 0x3200, 3, solar_slave_id_, &status_resp)) {
+      std::cout << "❌ 太阳能状态信息读取失败\n";
       return;
     }
 
-    std::vector<uint16_t> pv_values;
-    if (!parseRegisterResponse(pv_resp, 0x04, 4, &pv_values)) {
-      std::cout << "❌ 太阳能状态信息解析失败：光伏阵列实时量\n";
-      return;
-    }
-    std::vector<uint16_t> load_values;
-    if (!parseRegisterResponse(load_resp, 0x04, 4, &load_values)) {
-      std::cout << "❌ 太阳能状态信息解析失败：负载实时量\n";
+    std::vector<uint16_t> status_values;
+    if (!parseRegisterResponse(status_resp, 0x04, 3, &status_values) || status_values.size() < 3) {
+      std::cout << "❌ 太阳能状态信息解析失败\n";
       return;
     }
 
-    const double pv_voltage = pv_values[0] / 100.0;
-    const double pv_current = pv_values[1] / 100.0;
-    const double pv_power =
-        ((static_cast<uint32_t>(pv_values[3]) << 16) | pv_values[2]) / 100.0;
-    const double load_voltage = load_values[0] / 100.0;
-    const double load_current = load_values[1] / 100.0;
-    const double load_power =
-        ((static_cast<uint32_t>(load_values[3]) << 16) | load_values[2]) / 100.0;
+    const uint16_t battery_status = status_values[0];
+    const uint16_t charge_status = status_values[1];
+    const uint16_t discharge_status = status_values[2];
+    const uint16_t charging_mode = static_cast<uint16_t>((charge_status >> 2) & 0x03);
+    std::string charging_mode_text = "未知";
+    if (charging_mode == 0) charging_mode_text = "未充电";
+    else if (charging_mode == 1) charging_mode_text = "浮充";
+    else if (charging_mode == 2) charging_mode_text = "提升";
+    else if (charging_mode == 3) charging_mode_text = "均衡";
 
-    std::cout << "✅ 太阳能关键信息：\n";
-    std::cout << "  光伏阵列电压: " << std::fixed << std::setprecision(2) << pv_voltage << "V\n";
-    std::cout << "  光伏阵列电流: " << std::fixed << std::setprecision(2) << pv_current << "A\n";
-    std::cout << "  光伏发电功率: " << std::fixed << std::setprecision(2) << pv_power << "W\n";
-    std::cout << "  负载电压: " << std::fixed << std::setprecision(2) << load_voltage << "V\n";
-    std::cout << "  负载电流: " << std::fixed << std::setprecision(2) << load_current << "A\n";
-    std::cout << "  负载功率: " << std::fixed << std::setprecision(2) << load_power << "W\n";
+    std::cout << "✅ 太阳能状态信息：\n";
+    std::cout << "  蓄电池状态寄存器(0x3200): 0x" << std::hex << std::uppercase
+              << std::setw(4) << std::setfill('0') << battery_status << std::dec << "\n";
+    std::cout << "  充电设备状态寄存器(0x3201): 0x" << std::hex << std::uppercase
+              << std::setw(4) << std::setfill('0') << charge_status << std::dec << "\n";
+    std::cout << "  放电设备状态寄存器(0x3202): 0x" << std::hex << std::uppercase
+              << std::setw(4) << std::setfill('0') << discharge_status << std::dec << "\n";
+    std::cout << "  充电状态解析: " << charging_mode_text << "\n";
   } else if (info_type == "all") {
     querySolarInfo("basic");
     querySolarInfo("status");

@@ -25,6 +25,7 @@
 namespace ai_safety_controller {
 
 namespace {
+const char* kSpdLidarVerticalAngleToVerticalKey = "vertical_angle_to_vertical_deg";
 
 std::string joinArgs(const std::vector<std::string>& args, size_t start) {
   std::ostringstream oss;
@@ -240,6 +241,16 @@ double Interface::spdLidarQueryHz() const {
   return spd_lidar_query_hz_;
 }
 
+void Interface::setDeviceStatus(const DeviceStatus& data) {
+  std::lock_guard<std::mutex> lock(device_status_mutex_);
+  latest_device_status_ = data;
+}
+
+DeviceStatus Interface::getDeviceStatus() const {
+  std::lock_guard<std::mutex> lock(device_status_mutex_);
+  return latest_device_status_;
+}
+
 std::string Interface::extractObjectBody(const std::string& json_text, const std::string& key) {
   const std::string marker = "\"" + key + "\"";
   const size_t key_pos = json_text.find(marker);
@@ -397,10 +408,25 @@ void Interface::applyHoistHookDefaultsFromJson(const std::string& json_text) {
 
   bool enable = true;
   if (extractBoolValue(body, "enable", &enable)) hoist_hook_defaults_.enable = enable;
+  bool print_status = true;
+  if (extractBoolValue(body, "print_status", &print_status)) hoist_hook_defaults_.print_status = print_status;
+  std::string transport;
+  if (extractStringValue(body, "transport", &transport)) hoist_hook_defaults_.transport = transport;
   std::string module_ip;
   if (extractStringValue(body, "module_ip", &module_ip)) hoist_hook_defaults_.module_ip = module_ip;
   int module_port = 0;
   if (extractIntValue(body, "module_port", &module_port)) hoist_hook_defaults_.module_port = module_port;
+  std::string device;
+  if (extractStringValue(body, "device", &device)) hoist_hook_defaults_.device = device;
+  int baud = 0;
+  if (extractIntValue(body, "baud", &baud)) hoist_hook_defaults_.baud = baud;
+  std::string parity_str;
+  if (extractStringValue(body, "parity", &parity_str) && !parity_str.empty())
+    hoist_hook_defaults_.parity = parity_str[0];
+  int data_bit = 0;
+  if (extractIntValue(body, "data_bit", &data_bit)) hoist_hook_defaults_.data_bit = data_bit;
+  int stop_bit = 0;
+  if (extractIntValue(body, "stop_bit", &stop_bit)) hoist_hook_defaults_.stop_bit = stop_bit;
   int hook_slave_id = 0;
   if (extractIntValue(body, "hook_slave_id", &hook_slave_id)) hoist_hook_defaults_.hook_slave_id = hook_slave_id;
   int power_slave_id = 0;
@@ -470,8 +496,12 @@ void Interface::applySpdLidarDefaultsFromJson(const std::string& json_text) {
       if (extractIntValue(object_bodies[i], "device_port", &device_port)) one.device_port = device_port;
       std::string role;
       if (extractStringValue(object_bodies[i], "role", &role)) one.role = role;
-      int priority = 0;
-      if (extractIntValue(object_bodies[i], "priority", &priority)) one.priority = priority;
+      double vertical_angle_to_vertical_deg = 0.0;
+      if (extractDoubleValue(object_bodies[i],
+                             kSpdLidarVerticalAngleToVerticalKey,
+                             &vertical_angle_to_vertical_deg)) {
+        one.vertical_angle_to_vertical_deg = vertical_angle_to_vertical_deg;
+      }
       spd_lidar_instances_.push_back(one);
     }
     return;
@@ -489,6 +519,10 @@ void Interface::applySpdLidarDefaultsFromJson(const std::string& json_text) {
   if (extractStringValue(body, "device_ip", &device_ip)) one.device_ip = device_ip;
   int device_port = 0;
   if (extractIntValue(body, "device_port", &device_port)) one.device_port = device_port;
+  double vertical_angle_to_vertical_deg = 0.0;
+  if (extractDoubleValue(body, kSpdLidarVerticalAngleToVerticalKey, &vertical_angle_to_vertical_deg)) {
+    one.vertical_angle_to_vertical_deg = vertical_angle_to_vertical_deg;
+  }
   spd_lidar_instances_.push_back(one);
 }
 
@@ -768,6 +802,10 @@ void Interface::printSnapshotTick() {
   std::lock_guard<std::mutex> lock(output_mutex_);
   for (size_t i = 0; i < sensors.size(); ++i) {
     const std::string& sensor = sensors[i];
+#ifdef ASC_ENABLE_HOIST_HOOK
+    // 当 hoist_hook.print_status = false 时，完全跳过 hoist_hook 的快照打印
+    if (sensor == "hoist_hook" && !hoist_hook_defaults_.print_status) continue;
+#endif
     const Status& s = statuses[sensor];
     const std::time_t t = std::chrono::system_clock::to_time_t(times[sensor]);
     const std::string ts = std::string(std::ctime(&t));
@@ -874,11 +912,23 @@ Status Interface::init() {
 #endif
 #ifdef ASC_ENABLE_HOIST_HOOK
   if (hoist_hook_defaults_.enable) {
-    hoist_hook_ = std::make_unique<hoist_hook::HoistHookCore>(
-        hoist_hook_defaults_.module_ip,
-        static_cast<uint16_t>(hoist_hook_defaults_.module_port),
-        static_cast<uint8_t>(hoist_hook_defaults_.hook_slave_id),
-        static_cast<uint8_t>(hoist_hook_defaults_.power_slave_id));
+    if (hoist_hook_defaults_.transport == "rtu") {
+      hoist_hook_ = std::make_unique<hoist_hook::HoistHookCore>(
+          hoist_hook_defaults_.device,
+          hoist_hook_defaults_.baud,
+          hoist_hook_defaults_.parity,
+          hoist_hook_defaults_.data_bit,
+          hoist_hook_defaults_.stop_bit,
+          static_cast<uint8_t>(hoist_hook_defaults_.hook_slave_id),
+          static_cast<uint8_t>(hoist_hook_defaults_.power_slave_id));
+    } else {
+      hoist_hook_ = std::make_unique<hoist_hook::HoistHookCore>(
+          hoist_hook_defaults_.module_ip,
+          static_cast<uint16_t>(hoist_hook_defaults_.module_port),
+          static_cast<uint8_t>(hoist_hook_defaults_.hook_slave_id),
+          static_cast<uint8_t>(hoist_hook_defaults_.power_slave_id));
+    }
+    hoist_hook_->setPrintEnabled(hoist_hook_defaults_.print_status);
   }
 #endif
 #ifdef ASC_ENABLE_IO_RELAY
@@ -1033,6 +1083,30 @@ Status Interface::queryBattery(const std::vector<std::string>& args) {
 #endif
 
 #ifdef ASC_ENABLE_SOLAR
+void Interface::updateSolarChargeStateFromDriver() {
+  DeviceStatus data = getDeviceStatus();
+  data.solarCharge = DeviceStatus::SolarChargeState::Unknown;
+  if (!solar_) {
+    setDeviceStatus(data);
+    return;
+  }
+
+  solar::SolarCore::ChargeStatusSample sample;
+  if (!solar_->readChargeStatusSample(&sample) || !sample.ok) {
+    setDeviceStatus(data);
+    return;
+  }
+
+  if (solar::SolarCore::hasChargeFault(sample.charge_status_word)) {
+    data.solarCharge = DeviceStatus::SolarChargeState::Fault;
+  } else if (sample.battery_current_a > 0.05) {
+    data.solarCharge = DeviceStatus::SolarChargeState::Charging;
+  } else {
+    data.solarCharge = DeviceStatus::SolarChargeState::NotCharging;
+  }
+  setDeviceStatus(data);
+}
+
 Status Interface::querySolar(const std::vector<std::string>& args) {
   if (!solar_) return Status{false, "solar not enabled"};
   if (args.empty()) return Status{false, "missing command"};
@@ -1061,6 +1135,9 @@ Status Interface::querySolar(const std::vector<std::string>& args) {
   } else {
     return Status{false, "unknown solar command"};
   }
+  if (cmd == "basic" || cmd == "status" || cmd == "all") {
+    updateSolarChargeStateFromDriver();
+  }
   return Status{true, "ok"};
 }
 #endif
@@ -1068,7 +1145,17 @@ Status Interface::querySolar(const std::vector<std::string>& args) {
 #ifdef ASC_ENABLE_HOIST_HOOK
 Status Interface::queryHoistHook(const std::vector<std::string>& args) {
   if (!hoist_hook_) return Status{false, "hoist_hook not enabled"};
-  if (args.empty()) return Status{false, "missing command"};
+  if (args.empty()) {
+    std::cout << "[hoist_hook] usage:\n"
+              << "  hoist_hook map\n"
+              << "  hoist_hook speaker|light|rfid|power|gps|all\n"
+              << "  hoist_hook speaker_ctl <off|7m|3m|both>\n"
+              << "  hoist_hook light_ctl <on|off>\n"
+              << "  hoist_hook volume <0-30>\n"
+              << "  hoist_hook get <addr> [qty] [fc]\n"
+              << "  hoist_hook set <addr> <value> [fc]\n";
+    return Status{false, "missing command"};
+  }
   const std::string& cmd = args[0];
   if (cmd == "map") hoist_hook_->printRegisterGroups();
   else if (cmd == "speaker" || cmd == "light" || cmd == "rfid" || cmd == "power" || cmd == "gps" ||
@@ -1079,6 +1166,13 @@ Status Interface::queryHoistHook(const std::vector<std::string>& args) {
   } else if (cmd == "light_ctl") {
     if (args.size() < 2) return Status{false, "usage: hoist_hook light_ctl <on|off>"};
     hoist_hook_->controlWarningLight(args[1]);
+  } else if (cmd == "volume") {
+    if (args.size() < 2) return Status{false, "usage: hoist_hook volume <0-30>"};
+    int vol = 0;
+    if (!parseInt(args[1], &vol)) return Status{false, "invalid volume"};
+    if (vol < 0 || vol > 30) return Status{false, "volume out of range (0-30)"};
+    // 文档：DEC103(0x0067) 设置音量 0~30；交互控制免确认
+    hoist_hook_->genericWrite(static_cast<uint16_t>(0x0067), static_cast<uint16_t>(vol), 0x06, true);
   } else if (cmd == "get") {
     if (args.size() < 2) return Status{false, "usage: hoist_hook get <addr> [qty] [fc]"};
     int addr = 0, qty = 1, fc = -1;
@@ -1093,6 +1187,13 @@ Status Interface::queryHoistHook(const std::vector<std::string>& args) {
     if (args.size() >= 4 && !parseInt(args[3], &fc)) return Status{false, "invalid fc"};
     hoist_hook_->genericWrite(static_cast<uint16_t>(addr), static_cast<uint16_t>(val), fc);
   } else {
+    std::cout << "[hoist_hook] unknown command: " << cmd << "\n"
+              << "  usage: hoist_hook speaker_ctl <off|7m|3m|both>\n"
+              << "         hoist_hook light_ctl <on|off>\n"
+              << "         hoist_hook volume <0-30>\n"
+              << "         hoist_hook speaker|light|rfid|power|gps|all\n"
+              << "         hoist_hook get <addr> [qty] [fc]\n"
+              << "         hoist_hook set <addr> <value> [fc]\n";
     return Status{false, "unknown hoist_hook command"};
   }
   return Status{true, "ok"};
@@ -1176,7 +1277,8 @@ Status Interface::querySpdLidar(const std::vector<std::string>& args) {
                 << " device=" << cfg.device_ip << ":" << cfg.device_port
                 << " initialized=" << (initialized ? "true" : "false");
       if (!cfg.role.empty()) std::cout << " role=" << cfg.role;
-      std::cout << " priority=" << cfg.priority << "\n";
+      std::cout << " vertical_angle_to_vertical_deg=" << cfg.vertical_angle_to_vertical_deg
+                << "\n";
     }
     return Status{true, "ok"};
   }
