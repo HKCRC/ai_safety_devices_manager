@@ -82,6 +82,61 @@ bool BatteryCore::parseFunctionCode(const std::string& text,
   return false;
 }
 
+bool BatteryCore::isOnline(double timeout_sec) {
+  std::vector<uint8_t> response;
+  if (!sendBatteryRead(0x03, 0x0002, 1, battery_slave_id_, &response, timeout_sec)) {
+    return false;
+  }
+  std::vector<uint16_t> values;
+  if (!parseRegisterResponse(response, 0x03, 1, &values)) {
+    return false;
+  }
+  return !values.empty();
+}
+
+bool BatteryCore::readSummary(Summary* out, double timeout_sec) {
+  if (!out) return false;
+  *out = Summary{};
+
+  if (battery_slave_id_ == module_slave_id_ || battery_slave_id_ < 2) {
+    return false;
+  }
+
+  std::vector<uint8_t> response;
+  if (!sendBatteryRead(0x03, 0x0000, 9, battery_slave_id_, &response, timeout_sec)) {
+    return false;
+  }
+  std::vector<uint16_t> values;
+  if (!parseRegisterResponse(response, 0x03, 9, &values) || values.size() < 9) {
+    return false;
+  }
+
+  std::vector<uint8_t> charge_mos_resp;
+  bool has_charge_mos = false;
+  uint16_t charge_mos = 0;
+  if (sendBatteryRead(0x03, 0x000A, 1, battery_slave_id_, &charge_mos_resp, timeout_sec)) {
+    std::vector<uint16_t> mos_values;
+    if (parseRegisterResponse(charge_mos_resp, 0x03, 1, &mos_values) && !mos_values.empty()) {
+      has_charge_mos = true;
+      charge_mos = mos_values[0];
+    }
+  }
+
+  Summary s;
+  s.soc_percent = static_cast<float>(values[0] * 0.01);
+  s.voltage_v = static_cast<float>(values[2] * 0.01);
+  s.current_a = static_cast<float>(toSigned16(values[1]) * 0.01);
+  s.remaining_discharge_min =
+      (values[7] == 0xFFFFu) ? 0u : static_cast<std::uint32_t>(values[7]);
+  s.remaining_charge_min =
+      (values[8] == 0xFFFFu) ? 0u : static_cast<std::uint32_t>(values[8]);
+  s.has_charge_mos = has_charge_mos;
+  s.charge_mos = charge_mos;
+  s.ok = true;
+  *out = s;
+  return true;
+}
+
 std::vector<uint8_t> BatteryCore::createModbusPacket(uint8_t function_code,
                                                      uint16_t address,
                                                      uint16_t value,

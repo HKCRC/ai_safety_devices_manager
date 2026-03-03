@@ -160,7 +160,12 @@ Interface::Interface()
       config_loaded_(false),
       spd_lidar_query_hz_(0.0),
       auto_query_running_(false),
-      snapshot_printer_running_(false) {}
+      snapshot_printer_running_(false)
+#ifdef ASC_ENABLE_SPD_LIDAR
+      ,
+      trolley_lidar_has_valid_frame_(false)
+#endif
+{}
 
 Interface::~Interface() {
   stopAutoQueryPolling();
@@ -408,8 +413,6 @@ void Interface::applyHoistHookDefaultsFromJson(const std::string& json_text) {
 
   bool enable = true;
   if (extractBoolValue(body, "enable", &enable)) hoist_hook_defaults_.enable = enable;
-  bool print_status = true;
-  if (extractBoolValue(body, "print_status", &print_status)) hoist_hook_defaults_.print_status = print_status;
   std::string transport;
   if (extractStringValue(body, "transport", &transport)) hoist_hook_defaults_.transport = transport;
   std::string module_ip;
@@ -604,8 +607,19 @@ void Interface::buildDriverAdapters() {
         []() { return Status{true, "hoist_hook is request-response driver"}; },
         [this](const std::vector<std::string>& args) { return queryHoistHook(args); },
         []() {
-          return std::vector<std::string>{"map", "speaker", "light", "rfid", "power", "gps", "all",
-                                          "speaker_ctl", "light_ctl", "get", "set"};
+          return std::vector<std::string>{"map",
+                                          "speaker",
+                                          "light",
+                                          "rfid",
+                                          "power",
+                                          "gps",
+                                          "all",
+                                          "heartbeat",
+                                          "mode",
+                                          "speaker_ctl",
+                                          "light_ctl",
+                                          "get",
+                                          "set"};
         });
   }
 #endif
@@ -650,6 +664,52 @@ void Interface::buildDriverAdapters() {
         []() { return std::vector<std::string>{"list", "status", "send"}; });
   }
 #endif
+
+  // Logical device-level adapter for querying aggregated DeviceStatus.
+  drivers_["device"] = std::make_unique<FunctionDriverAdapter>(
+      "device",
+      []() { return Status{true, "ok"}; },
+      []() { return Status{true, "device adapter started"}; },
+      []() { return Status{true, "device adapter stopped"}; },
+      [this](const std::vector<std::string>& args) -> Status {
+        if (!args.empty() && args[0] != "status") {
+          return Status{false, "unknown device command"};
+        }
+
+#ifdef ASC_ENABLE_SOLAR
+        updateSolarChargeStateFromDriver();
+#endif
+        updateTrolleyStateFromDrivers();
+        updateHookStateFromDriver();
+
+        const DeviceStatus d = getDeviceStatus();
+
+        std::cout << "DeviceStatus:\n";
+        // solar
+        std::cout << "  solarCharge=" << static_cast<int>(d.solarCharge) << "\n";
+        // trolley
+        std::cout << "  trolleyState=" << static_cast<int>(d.trolleyState) << "\n";
+        std::cout << "  trolleyBattery.percent=" << static_cast<int>(d.trolleyBattery.percent) << "%\n";
+        std::cout << "  trolleyBattery.remainingMin=" << d.trolleyBattery.remainingMin << " min\n";
+        std::cout << "  trolleyBattery.isCharging=" << (d.trolleyBattery.isCharging ? "true" : "false")
+                  << "\n";
+        std::cout << "  trolleyBattery.chargingTimeMin=" << d.trolleyBattery.chargingTimeMin << " min\n";
+        std::cout << "  trolleyBattery.voltageV=" << d.trolleyBattery.voltageV << " V\n";
+        std::cout << "  trolleyBattery.currentA=" << d.trolleyBattery.currentA << " A\n";
+
+        // hook
+        std::cout << "  hookState=" << static_cast<int>(d.hookState) << "\n";
+        std::cout << "  hookBattery.percent=" << static_cast<int>(d.hookBattery.percent) << "%\n";
+        std::cout << "  hookBattery.remainingMin=" << d.hookBattery.remainingMin << " min\n";
+        std::cout << "  hookBattery.isCharging=" << (d.hookBattery.isCharging ? "true" : "false")
+                  << "\n";
+        std::cout << "  hookBattery.chargingTimeMin=" << d.hookBattery.chargingTimeMin << " min\n";
+        std::cout << "  hookBattery.voltageV=" << d.hookBattery.voltageV << " V\n";
+        std::cout << "  hookBattery.currentA=" << d.hookBattery.currentA << " A\n";
+
+        return Status{true, "ok"};
+      },
+      []() { return std::vector<std::string>{"status"}; });
 }
 
 void Interface::startAutoQueryPolling() {
@@ -657,8 +717,6 @@ void Interface::startAutoQueryPolling() {
   auto_query_running_ = true;
   struct PollTask {
     std::string sensor;
-    std::string snapshot_key;
-    std::vector<std::string> args;
     std::chrono::steady_clock::duration period;
     std::chrono::steady_clock::time_point next_due;
   };
@@ -666,16 +724,12 @@ void Interface::startAutoQueryPolling() {
   const auto now = std::chrono::steady_clock::now();
 
   const auto add_task = [&](const std::string& sensor,
-                            const std::string& snapshot_key,
-                            double hz,
-                            const std::vector<std::string>& args) {
+                            double hz) {
     if (hz <= 0.0) return;
     if (drivers_.find(sensor) == drivers_.end()) return;
     const double safe_hz = std::min(std::max(hz, 0.1), 50.0);
     PollTask t;
     t.sensor = sensor;
-    t.snapshot_key = snapshot_key;
-    t.args = args;
     t.period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<double>(1.0 / safe_hz));
     t.next_due = now;
@@ -683,30 +737,13 @@ void Interface::startAutoQueryPolling() {
   };
 
 #ifdef ASC_ENABLE_BATTERY
-  add_task("battery", "battery", battery_defaults_.query_hz, {"basic"});
+  add_task("battery", battery_defaults_.query_hz);
 #endif
 #ifdef ASC_ENABLE_SOLAR
-  add_task("solar", "solar", solar_defaults_.query_hz, {"status"});
+  add_task("solar", solar_defaults_.query_hz);
 #endif
 #ifdef ASC_ENABLE_HOIST_HOOK
-  add_task("hoist_hook", "hoist_hook", hoist_hook_defaults_.query_hz, {"all"});
-#endif
-#ifdef ASC_ENABLE_IO_RELAY
-  add_task("io_relay", "io_relay", io_relay_defaults_.query_hz, {"read"});
-#endif
-#ifdef ASC_ENABLE_MULTI_TURN_ENCODER
-  add_task("multi_turn_encoder", "multi_turn_encoder", encoder_defaults_.query_hz, {"get"});
-#endif
-#ifdef ASC_ENABLE_SPD_LIDAR
-  if (spd_lidar_query_hz_ > 0.0) {
-    for (size_t i = 0; i < spd_lidar_instances_.size(); ++i) {
-      if (!spd_lidar_instances_[i].enable) continue;
-      add_task("spd_lidar",
-               "spd_lidar:" + spd_lidar_instances_[i].id,
-               spd_lidar_query_hz_,
-               {"send", spd_lidar_instances_[i].id, "single"});
-    }
-  }
+  add_task("hoist_hook", hoist_hook_defaults_.query_hz);
 #endif
 
   if (!tasks.empty()) {
@@ -716,13 +753,13 @@ void Interface::startAutoQueryPolling() {
         bool ran = false;
         for (size_t i = 0; i < tasks.size(); ++i) {
           if (tick < tasks[i].next_due) continue;
-          std::string captured;
-          const Status s = queryWithCapturedOutput(tasks[i].sensor, tasks[i].args, &captured);
-          {
-            std::lock_guard<std::mutex> lock(snapshot_mutex_);
-            latest_query_output_[tasks[i].snapshot_key] = captured;
-            latest_query_status_[tasks[i].snapshot_key] = s;
-            latest_query_time_[tasks[i].snapshot_key] = std::chrono::system_clock::now();
+          // 静默轮询，仅更新 DeviceStatus，不在终端打印
+          if (tasks[i].sensor == "battery") {
+            updateTrolleyStateFromDrivers();
+          } else if (tasks[i].sensor == "solar") {
+            updateSolarChargeStateFromDriver();
+          } else if (tasks[i].sensor == "hoist_hook") {
+            updateHookStateFromDriver();
           }
           tasks[i].next_due = std::chrono::steady_clock::now() + tasks[i].period;
           ran = true;
@@ -732,8 +769,6 @@ void Interface::startAutoQueryPolling() {
       }
     });
   }
-
-  startSnapshotPrinter();
 }
 
 void Interface::stopAutoQueryPolling() {
@@ -775,6 +810,118 @@ void Interface::startSnapshotPrinter() {
   });
 }
 
+void Interface::updateTrolleyStateFromDrivers() {
+  DeviceStatus data = getDeviceStatus();
+
+#ifdef ASC_ENABLE_BATTERY
+  // 未启用电池功能或电池驱动未实例化：保持 Unknown（表示此功能不适用/未配置）
+  if (!battery_defaults_.enable || !battery_) {
+    data.trolleyState = DeviceStatus::EquipmentState::Unknown;
+    setDeviceStatus(data);
+    return;
+  }
+
+  const bool battery_ok = battery_->isOnline();
+  if (!battery_ok) {
+    data.trolleyState = DeviceStatus::EquipmentState::Offline;
+    setDeviceStatus(data);
+    return;
+  }
+
+  {
+    battery::BatteryCore::Summary summary;
+    if (battery_->readSummary(&summary)) {
+      DeviceStatus::BatteryInfo info;
+      float soc = summary.soc_percent;
+      if (soc < 0.0f) soc = 0.0f;
+      if (soc > 100.0f) soc = 100.0f;
+      info.percent = static_cast<std::uint8_t>(soc + 0.5f);
+      info.voltageV = summary.voltage_v;
+      info.currentA = summary.current_a;
+      info.remainingMin = summary.remaining_discharge_min;
+      info.chargingTimeMin = summary.remaining_charge_min;
+
+      bool is_charging = false;
+      const float current_a = summary.current_a;
+      if (summary.has_charge_mos) {
+        if (summary.charge_mos != 0) {
+          is_charging = (current_a > 0.05f) ||
+                        (current_a > -0.05f && current_a < 0.05f);
+        }
+      } else {
+        if (current_a > 0.05f) {
+          is_charging = true;
+        }
+      }
+      info.isCharging = is_charging;
+      data.trolleyBattery = info;
+    }
+  }
+#endif
+
+  bool encoder_ok = false;
+#ifdef ASC_ENABLE_MULTI_TURN_ENCODER
+  if (multi_turn_encoder_) {
+    const multi_turn_encoder::MultiTurnEncoderCore::LatestData latest =
+        multi_turn_encoder_->getLatest();
+    encoder_ok = latest.valid && latest.connected;
+  }
+#endif
+
+  bool lidar_ok = false;
+#ifdef ASC_ENABLE_SPD_LIDAR
+  lidar_ok = trolley_lidar_has_valid_frame_.load(std::memory_order_relaxed);
+#endif
+
+  // 到这里说明小车电池在线（online），根据传感器数据区分 Active / Standby
+  if (encoder_ok || lidar_ok) {
+    data.trolleyState = DeviceStatus::EquipmentState::Active;
+  } else {
+    data.trolleyState = DeviceStatus::EquipmentState::Standby;
+  }
+
+  setDeviceStatus(data);
+}
+
+void Interface::updateHookStateFromDriver() {
+  DeviceStatus data = getDeviceStatus();
+
+#ifdef ASC_ENABLE_HOIST_HOOK
+  if (!hoist_hook_ || !hoist_hook_defaults_.enable) {
+    data.hookState = DeviceStatus::EquipmentState::Unknown;
+    setDeviceStatus(data);
+    return;
+  }
+
+  hoist_hook::HoistHookCore::PowerSummary summary;
+  if (!hoist_hook_->readPowerSummary(&summary)) {
+    data.hookState = DeviceStatus::EquipmentState::Offline;
+    setDeviceStatus(data);
+    return;
+  }
+
+  {
+    DeviceStatus::BatteryInfo info;
+    float soc = summary.battery_percent;
+    if (soc < 0.0f) soc = 0.0f;
+    if (soc > 100.0f) soc = 100.0f;
+    info.percent = static_cast<std::uint8_t>(soc + 0.5f);
+    info.voltageV = summary.voltage_v;
+    info.currentA = summary.current_a;
+    info.remainingMin = summary.remaining_discharge_min;
+    info.chargingTimeMin = summary.remaining_charge_min;
+    info.isCharging = summary.is_charging;
+    data.hookBattery = info;
+  }
+
+  hook_battery_last_update_ = std::chrono::system_clock::now();
+  data.hookState = DeviceStatus::EquipmentState::Active;
+  setDeviceStatus(data);
+#else
+  (void)data;
+#endif
+}
+
 void Interface::stopSnapshotPrinter() {
   snapshot_printer_running_ = false;
   if (snapshot_printer_thread_.joinable()) snapshot_printer_thread_.join();
@@ -802,10 +949,6 @@ void Interface::printSnapshotTick() {
   std::lock_guard<std::mutex> lock(output_mutex_);
   for (size_t i = 0; i < sensors.size(); ++i) {
     const std::string& sensor = sensors[i];
-#ifdef ASC_ENABLE_HOIST_HOOK
-    // 当 hoist_hook.print_status = false 时，完全跳过 hoist_hook 的快照打印
-    if (sensor == "hoist_hook" && !hoist_hook_defaults_.print_status) continue;
-#endif
     const Status& s = statuses[sensor];
     const std::time_t t = std::chrono::system_clock::to_time_t(times[sensor]);
     const std::string ts = std::string(std::ctime(&t));
@@ -928,7 +1071,6 @@ Status Interface::init() {
           static_cast<uint8_t>(hoist_hook_defaults_.hook_slave_id),
           static_cast<uint8_t>(hoist_hook_defaults_.power_slave_id));
     }
-    hoist_hook_->setPrintEnabled(hoist_hook_defaults_.print_status);
   }
 #endif
 #ifdef ASC_ENABLE_IO_RELAY
@@ -977,7 +1119,7 @@ Status Interface::init() {
     lidar->on_log.connect([id](const std::string& text) {
       std::cout << "[spd_lidar:" << id << "] " << text << "\n";
     });
-    lidar->on_frame.connect([id](const spd_lidar::SpdLidarFrame& frame) {
+    lidar->on_frame.connect([this, id](const spd_lidar::SpdLidarFrame& frame) {
       const double distance_m = static_cast<double>(frame.data) / 1000.0;
       std::cout << "[spd_lidar:" << id << "] "
                 << "distance=" << frame.data << "mm (" << std::fixed << std::setprecision(3)
@@ -986,6 +1128,9 @@ Status Interface::init() {
                 << std::dec
                 << " checksum_ok=" << (frame.checksum_ok ? "true" : "false")
                 << "\n";
+      if (frame.valid_header && frame.checksum_ok) {
+        trolley_lidar_has_valid_frame_.store(true, std::memory_order_relaxed);
+      }
     });
     spd_lidar::SpdLidarCore* lidar_raw = lidar.get();
     lidar->on_send.connect([cfg, id, lidar_raw](const std::vector<uint8_t>& req) {
@@ -1085,8 +1230,10 @@ Status Interface::queryBattery(const std::vector<std::string>& args) {
 #ifdef ASC_ENABLE_SOLAR
 void Interface::updateSolarChargeStateFromDriver() {
   DeviceStatus data = getDeviceStatus();
-  data.solarCharge = DeviceStatus::SolarChargeState::Unknown;
   if (!solar_) {
+    if (solar_defaults_.enable) {
+      data.solarCharge = DeviceStatus::SolarChargeState::Fault;
+    }
     setDeviceStatus(data);
     return;
   }
@@ -1148,7 +1295,7 @@ Status Interface::queryHoistHook(const std::vector<std::string>& args) {
   if (args.empty()) {
     std::cout << "[hoist_hook] usage:\n"
               << "  hoist_hook map\n"
-              << "  hoist_hook speaker|light|rfid|power|gps|all\n"
+              << "  hoist_hook speaker|light|rfid|power|gps|all|heartbeat|mode\n"
               << "  hoist_hook speaker_ctl <off|7m|3m|both>\n"
               << "  hoist_hook light_ctl <on|off>\n"
               << "  hoist_hook volume <0-30>\n"
@@ -1158,8 +1305,10 @@ Status Interface::queryHoistHook(const std::vector<std::string>& args) {
   }
   const std::string& cmd = args[0];
   if (cmd == "map") hoist_hook_->printRegisterGroups();
-  else if (cmd == "speaker" || cmd == "light" || cmd == "rfid" || cmd == "power" || cmd == "gps" ||
-           cmd == "all") hoist_hook_->queryHookInfo(cmd);
+  else if (cmd == "speaker" || cmd == "light" || cmd == "rfid" || cmd == "power" ||
+           cmd == "gps" || cmd == "all" || cmd == "heartbeat" || cmd == "mode") {
+    hoist_hook_->queryHookInfo(cmd);
+  }
   else if (cmd == "speaker_ctl") {
     if (args.size() < 2) return Status{false, "usage: hoist_hook speaker_ctl <off|7m|3m|both>"};
     hoist_hook_->controlSpeaker(args[1]);

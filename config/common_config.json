@@ -37,9 +37,8 @@
       "query_hz": 1.0
     },
     "hoist_hook": {
-      "_comment": "transport=rtu 直连串口 Modbus RTU（9600 8N1）；transport=tcp 使用 module_ip/module_port；print_status 关闭后仅错误信息会打印",
+      "_comment": "transport=rtu 直连串口 Modbus RTU（9600 8N1）；transport=tcp 使用 module_ip/module_port",
       "enable": true,
-      "print_status": false,
       "transport": "rtu",
       "device": "/dev/ttyUSB0",
       "baud": 9600,

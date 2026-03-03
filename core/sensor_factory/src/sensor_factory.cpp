@@ -12,6 +12,7 @@ std::vector<std::string> SensorFactory::availableSensors() const {
       "multi_turn_encoder",
       "solar",
       "spd_lidar",
+      "device",
   };
 }
 

@@ -93,10 +93,6 @@ HoistHookCore::HoistHookCore(const std::string& device,
           {0x0064, 0x00C7, "只读", "状态寄存器（100~199）"},
       }) {}
 
-void HoistHookCore::setPrintEnabled(bool on) {
-  print_enabled_ = on;
-}
-
 HoistHookCore::~HoistHookCore() {
   std::lock_guard<std::mutex> lock(socket_mutex_);
   disconnectLocked();
@@ -683,6 +679,70 @@ void HoistHookCore::queryPowerInfo() {
   std::cout << "  工作模式: " << mode_str << " (reg106=" << work_mode << ")\n";
 }
 
+void HoistHookCore::queryHeartbeat() {
+  std::vector<uint8_t> response;
+  // 心跳寄存器：DEC 104 -> 地址 0x0068
+  if (!sendRead(0x03, 0x0068, 1, hook_slave_id_, &response)) return;
+  std::vector<uint16_t> values;
+  if (!parseRegisterResponse(response, 0x03, 1, &values) || values.empty()) return;
+  std::cout << "✅ 吊钩心跳: " << values[0] << " (reg104)\n";
+}
+
+void HoistHookCore::queryWorkMode() {
+  std::vector<uint8_t> response;
+  // 工作模式寄存器：DEC 106 -> 地址 0x006A
+  if (!sendRead(0x03, 0x006A, 1, hook_slave_id_, &response)) return;
+  std::vector<uint16_t> values;
+  if (!parseRegisterResponse(response, 0x03, 1, &values) || values.empty()) return;
+  const uint16_t work_mode = values[0];
+  const char* mode_str = (work_mode == 0) ? "待机"
+                          : (work_mode == 1) ? "工作"
+                          : (work_mode == 2) ? "低电量(≤20%)"
+                                             : "未知";
+  std::cout << "✅ 吊钩工作模式: " << mode_str << " (reg106=" << work_mode << ")\n";
+}
+
+bool HoistHookCore::readPowerSummary(PowerSummary* out, double timeout_sec) {
+  if (!out) return false;
+  *out = PowerSummary{};
+
+  std::vector<uint8_t> response;
+  // 状态寄存器 100~110 在吊钩从站(hook_slave_id)上，地址 0x0064 起共 11 个
+  if (!sendRead(0x03, 0x0064, 11, hook_slave_id_, &response, timeout_sec)) {
+    return false;
+  }
+  std::vector<uint16_t> values;
+  if (!parseRegisterResponse(response, 0x03, 11, &values) || values.size() < 11) {
+    return false;
+  }
+
+  const uint16_t battery_raw = values[2];   // 102: 电池电量 0~10000 -> 0~100%
+  const uint16_t remain_min = values[5];    // 105: 剩余放电时间(分钟)
+  const uint16_t charging_flag = values[7]; // 107: 是否在充电 0/1
+  const uint16_t charge_min = values[8];    // 108: 充电剩余时间(分钟)
+  const uint16_t voltage_raw = values[9];   // 109: 电压(0.01V)
+  const uint16_t current_raw = values[10];  // 110: 电流(0.01A，有符号)
+
+  PowerSummary s;
+  if (battery_raw <= 10000) {
+    s.battery_percent = static_cast<float>(battery_raw / 100.0);
+  } else {
+    s.battery_percent = 0.0f;
+  }
+  s.remaining_discharge_min = static_cast<std::uint32_t>(remain_min);
+  // 107: 是否在充电
+  s.is_charging = (charging_flag != 0);
+  // 108: 充电剩余时间(分钟)，仅在正在充电时才使用
+  s.remaining_charge_min = s.is_charging ? static_cast<std::uint32_t>(charge_min) : 0u;
+  // 109: 电压(0.01V)
+  s.voltage_v = static_cast<float>(voltage_raw) * 0.01f;
+  // 110: 电流(0.01A)，有正负
+  s.current_a = static_cast<float>(static_cast<int16_t>(current_raw)) * 0.01f;
+  s.ok = true;
+  *out = s;
+  return true;
+}
+
 void HoistHookCore::queryGpsInfo() {
   if (print_enabled_) std::cout << "🛰️ GPS 功能按需求暂不启用，当前仅保留接口占位。\n";
 }
@@ -696,6 +756,10 @@ void HoistHookCore::queryHookInfo(const std::string& info_type) {
     queryRfidInfo();
   } else if (info_type == "power") {
     queryPowerInfo();
+  } else if (info_type == "heartbeat") {
+    queryHeartbeat();
+  } else if (info_type == "mode") {
+    queryWorkMode();
   } else if (info_type == "gps") {
     queryGpsInfo();
   } else if (info_type == "all") {

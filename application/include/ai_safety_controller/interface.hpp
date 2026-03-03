@@ -76,7 +76,6 @@ class Interface {
 
   struct HoistHookDefaults {
     bool enable = true;
-    bool print_status = true;
     std::string transport = "tcp";
     std::string module_ip = "192.168.1.12";
     int module_port = 502;
@@ -186,6 +185,8 @@ class Interface {
   void startSnapshotPrinter();
   void stopSnapshotPrinter();
   void printSnapshotTick();
+  void updateTrolleyStateFromDrivers();
+  void updateHookStateFromDriver();
 
 #ifdef ASC_ENABLE_BATTERY
   Status queryBattery(const std::vector<std::string>& args);
@@ -254,6 +255,12 @@ class Interface {
 #ifdef ASC_ENABLE_SPD_LIDAR
   std::unordered_map<std::string, std::unique_ptr<spd_lidar::SpdLidarCore>> spd_lidar_instances_core_;
 #endif
+
+#ifdef ASC_ENABLE_SPD_LIDAR
+  std::atomic<bool> trolley_lidar_has_valid_frame_{false};
+#endif
+
+  std::chrono::system_clock::time_point hook_battery_last_update_{};
 };
 
 }  // namespace ai_safety_controller

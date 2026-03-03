@@ -35,14 +35,22 @@ class HoistHookCore {
   /** skip_confirm=true 用于喇叭/灯/音量等交互控制，不弹 YES 确认，避免 off 需写两格时只生效一次 */
   void genericWrite(uint16_t address, uint16_t value, int function_code, bool skip_confirm = false);
 
-  /** 是否打印查询/控制结果（由配置 print_status 初始化，关闭后仅错误信息会打印） */
-  void setPrintEnabled(bool on);
-  bool printEnabled() const { return print_enabled_; }
-
   static bool parseNumber(const std::string& text, int* out);
   static bool parseFunctionCode(const std::string& text,
                                 const std::vector<int>& allowed,
                                 int* out);
+
+  struct PowerSummary {
+    bool ok = false;
+    float battery_percent = 0.0f;
+    std::uint32_t remaining_discharge_min = 0;
+    bool is_charging = false;
+    std::uint32_t remaining_charge_min = 0;
+    float voltage_v = 0.0f;
+    float current_a = 0.0f;
+  };
+
+  bool readPowerSummary(PowerSummary* out, double timeout_sec = 2.0);
 
  private:
   struct RegisterGroup {
@@ -86,6 +94,8 @@ class HoistHookCore {
   void queryRfidInfo();
   void queryPowerInfo();
   void queryGpsInfo();
+  void queryHeartbeat();
+  void queryWorkMode();
 
   const Transport transport_;
   const std::string module_ip_;

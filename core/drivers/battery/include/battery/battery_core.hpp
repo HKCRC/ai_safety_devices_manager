@@ -9,6 +9,17 @@ namespace battery {
 
 class BatteryCore {
  public:
+  struct Summary {
+    bool ok = false;
+    float soc_percent = 0.0f;
+    float voltage_v = 0.0f;
+    float current_a = 0.0f;
+    std::uint32_t remaining_discharge_min = 0;
+    std::uint32_t remaining_charge_min = 0;
+    bool has_charge_mos = false;
+    std::uint16_t charge_mos = 0;
+  };
+
   BatteryCore();
   BatteryCore(const std::string& module_ip,
               uint16_t module_port,
@@ -27,6 +38,9 @@ class BatteryCore {
   static bool parseFunctionCode(const std::string& text,
                                 const std::vector<int>& allowed,
                                 int* out);
+
+  bool isOnline(double timeout_sec = 1.0);
+  bool readSummary(Summary* out, double timeout_sec = 5.0);
 
  private:
   struct RegisterGroup {
