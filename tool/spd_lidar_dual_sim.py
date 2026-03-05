@@ -87,10 +87,15 @@ class LidarInstanceServer:
         self._conn = None
         self._sock = None
 
-        # For sdk mode=client, sdk connects to device_ip:device_port.
-        # This simulator acts as device-side TCP server by default.
-        self.host = default_host if default_host else self.device_ip
-        self.port = default_port if default_port > 0 else self.device_port
+        # Keep endpoint-selection semantics aligned with Interface::buildLidarEndpoint():
+        # mode=server -> connect/listen via local_ip/local_port
+        # otherwise   -> connect/listen via device_ip/device_port
+        endpoint_ip = self.local_ip if self.mode == "server" else self.device_ip
+        endpoint_port = self.local_port if self.mode == "server" else self.device_port
+
+        # CLI overrides still have highest priority for quick bring-up.
+        self.host = default_host if default_host else endpoint_ip
+        self.port = default_port if default_port > 0 else endpoint_port
 
     def _build_single_reply(self):
         d = self.distance_mm & 0xFFFF
@@ -196,8 +201,13 @@ def main():
 
     if args.base_port > 0:
         for i, one in enumerate(instances):
-            one["device_port"] = args.base_port + i
-            one["device_ip"] = args.host if args.host else one.get("device_ip", "127.0.0.1")
+            p = args.base_port + i
+            # Keep override behavior consistent for both mode paths.
+            one["device_port"] = p
+            one["local_port"] = p
+            if args.host:
+                one["device_ip"] = args.host
+                one["local_ip"] = args.host
 
     print("[spd_sim] dual-instance simulator starting")
     if cfg_path:

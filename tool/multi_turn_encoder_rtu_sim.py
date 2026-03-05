@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import errno
 import json
 import os
+import pty
 import socket
 import struct
 import threading
@@ -96,6 +98,23 @@ class EncoderState:
         return False
 
 
+def crc16_modbus(data: bytes) -> int:
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            if crc & 0x0001:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return crc & 0xFFFF
+
+
+def with_crc(payload: bytes) -> bytes:
+    crc = crc16_modbus(payload)
+    return payload + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+
+
 def recv_exact(conn: socket.socket, n: int) -> bytes:
     out = bytearray()
     while len(out) < n:
@@ -129,7 +148,9 @@ def handle_request(state: EncoderState, unit_id: int, pdu: bytes) -> bytes:
         if len(pdu) != 5:
             return pdu_exception(fc, 0x03)
         addr, value = struct.unpack(">HH", pdu[1:5])
-        state.write_single(addr, value)
+        ok = state.write_single(addr, value)
+        if not ok:
+            return pdu_exception(fc, 0x02)
         return pdu  # Echo request
 
     if fc == 0x10:
@@ -143,7 +164,9 @@ def handle_request(state: EncoderState, unit_id: int, pdu: bytes) -> bytes:
         data = pdu[6:]
         for i in range(qty):
             values.append(struct.unpack(">H", data[i * 2:(i + 1) * 2])[0])
-        state.write_multi(addr, values)
+        ok = state.write_multi(addr, values)
+        if not ok:
+            return pdu_exception(fc, 0x02)
         return struct.pack(">BHH", fc, addr, qty)
 
     return pdu_exception(fc, 0x01)
@@ -175,6 +198,138 @@ def handle_client(conn: socket.socket, addr, state: EncoderState):
         except Exception:
             pass
         print(f"[sim] client disconnected: {addr}")
+
+
+def ensure_device_link(target_dev: str, slave_path: str):
+    target = Path(target_dev)
+    if target.exists() or target.is_symlink():
+        if target.is_symlink():
+            try:
+                current = os.path.realpath(str(target))
+                if current == os.path.realpath(slave_path):
+                    return
+            except Exception:
+                pass
+            target.unlink()
+        else:
+            raise RuntimeError(
+                f"device path exists and is not symlink: {target_dev}. "
+                "Please remove it or pass another --device path."
+            )
+    parent = target.parent
+    if not parent.exists():
+        raise RuntimeError(f"parent dir not exists: {parent}")
+    os.symlink(slave_path, target_dev)
+
+
+def expected_rtu_req_len(buf: bytearray):
+    if len(buf) < 2:
+        return None
+    fc = buf[1]
+    if fc in (0x03, 0x04, 0x06):
+        return 8
+    if fc == 0x10:
+        if len(buf) < 7:
+            return None
+        byte_count = buf[6]
+        return 9 + byte_count
+    # Unknown FC requests in this project are 8-byte fixed format.
+    return 8
+
+
+def handle_rtu_adu(state: EncoderState, adu: bytes) -> bytes:
+    if len(adu) < 8:
+        return b""
+    uid = adu[0]
+    pdu = adu[1:-2]
+    recv_crc = adu[-2] | (adu[-1] << 8)
+    calc_crc = crc16_modbus(adu[:-2])
+    if recv_crc != calc_crc:
+        return b""
+
+    fc = pdu[0] if pdu else 0
+    if uid != state.unit_id:
+        resp_pdu = pdu_exception(fc, 0x0B)
+    else:
+        resp_pdu = handle_request(state, uid, pdu)
+    return with_crc(bytes([uid]) + resp_pdu)
+
+
+def serve_rtu(state: EncoderState, device: str, verbose: bool):
+    master_fd, slave_fd = pty.openpty()
+    slave_path = os.ttyname(slave_fd)
+    # Keep slave side open to avoid EIO when external peer is not connected yet.
+    keep_slave_fd = slave_fd
+    ensure_device_link(device, slave_path)
+
+    print("[sim] multi_turn_encoder rtu simulator started")
+    print(f"[sim] virtual serial: link {device} -> {slave_path}")
+    print(
+        f"[sim] unit_id={state.unit_id} speed_rps={state.speed_rps} "
+        f"turns_mode={state.turns_mode}"
+    )
+    print("[sim] supported: FC03/04 read, FC06 single write, FC10 multi-write")
+
+    buf = bytearray()
+    try:
+        while True:
+            try:
+                data = os.read(master_fd, 256)
+            except OSError as e:
+                if e.errno == errno.EIO:
+                    time.sleep(0.05)
+                    continue
+                raise
+            if not data:
+                time.sleep(0.01)
+                continue
+            buf.extend(data)
+            while True:
+                exp_len = expected_rtu_req_len(buf)
+                if exp_len is None or len(buf) < exp_len:
+                    break
+                adu = bytes(buf[:exp_len])
+                del buf[:exp_len]
+                resp = handle_rtu_adu(state, adu)
+                if resp:
+                    if verbose:
+                        print(f"[sim] rtu rx={adu.hex()} tx={resp.hex()}")
+                    os.write(master_fd, resp)
+    except KeyboardInterrupt:
+        print("\n[sim] stopped")
+    finally:
+        try:
+            os.close(master_fd)
+        except Exception:
+            pass
+        try:
+            os.close(keep_slave_fd)
+        except Exception:
+            pass
+
+
+def serve_tcp(state: EncoderState, host: str, port: int):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.listen(8)
+
+    print("[sim] multi_turn_encoder tcp simulator started")
+    print(
+        f"[sim] listen={host}:{port} unit_id={state.unit_id} "
+        f"speed_rps={state.speed_rps} turns_mode={state.turns_mode}"
+    )
+    print("[sim] supported: FC03/04 read, FC06 single write, FC10 multi-write")
+
+    try:
+        while True:
+            conn, client_addr = sock.accept()
+            t = threading.Thread(target=handle_client, args=(conn, client_addr, state), daemon=True)
+            t.start()
+    except KeyboardInterrupt:
+        print("\n[sim] stopped")
+    finally:
+        sock.close()
 
 
 def load_encoder_config(config_path: str):
@@ -219,13 +374,21 @@ def resolve_config_path(cli_path: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-turn encoder Modbus TCP simulator")
+    parser = argparse.ArgumentParser(description="Multi-turn encoder Modbus simulator (TCP/RTU)")
     parser.add_argument("--config", default="", help="path to common_config.json")
+    parser.add_argument(
+        "--transport",
+        choices=["tcp", "rtu"],
+        default="",
+        help="override transport mode (default from config runtime.multi_turn_encoder.transport)",
+    )
     parser.add_argument("--host", default="", help="bind host (default from config runtime.multi_turn_encoder.ip)")
     parser.add_argument("--port", type=int, default=-1, help="bind port (default from config runtime.multi_turn_encoder.port)")
+    parser.add_argument("--device", default="", help="rtu device path (default from config runtime.multi_turn_encoder.device)")
     parser.add_argument("--unit-id", type=int, default=-1, help="modbus unit id/slave (default from config runtime.multi_turn_encoder.slave)")
     parser.add_argument("--start-turns", type=float, default=12.0, help="initial turn count")
     parser.add_argument("--speed-rps", type=float, default=0.05, help="turns per second")
+    parser.add_argument("--verbose", action="store_true", help="verbose rtu frame logs")
     parser.add_argument(
         "--turns-mode",
         choices=["time", "read_rate"],
@@ -236,41 +399,22 @@ def main():
 
     cfg_path = resolve_config_path(args.config)
     enc_cfg = load_encoder_config(cfg_path)
-    transport = str(enc_cfg.get("transport", "rtu")).lower()
+    transport = args.transport if args.transport else str(enc_cfg.get("transport", "rtu")).lower()
 
     host = args.host if args.host else str(enc_cfg.get("ip", "0.0.0.0"))
     port = args.port if args.port > 0 else int(enc_cfg.get("port", 1502))
+    device = args.device if args.device else str(enc_cfg.get("device", "/tmp/ttyENC0"))
     unit_id = args.unit_id if args.unit_id > 0 else int(enc_cfg.get("slave", 1))
 
-    if transport and transport != "tcp":
-        print(f"[sim] warning: config transport='{transport}', simulator serves tcp only")
-
     state = EncoderState(args.start_turns, args.speed_rps, unit_id, args.turns_mode)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((host, port))
-    sock.listen(8)
-
-    print("[sim] multi_turn_encoder tcp simulator started")
     if cfg_path:
         print(f"[sim] config={cfg_path}")
     else:
         print("[sim] config=not found, use built-in defaults/CLI")
-    print(
-        f"[sim] listen={host}:{port} unit_id={unit_id} "
-        f"speed_rps={args.speed_rps} turns_mode={args.turns_mode}"
-    )
-    print("[sim] supported: FC03/04 read, FC06 single write, FC10 multi-write")
-
-    try:
-        while True:
-            conn, client_addr = sock.accept()
-            t = threading.Thread(target=handle_client, args=(conn, client_addr, state), daemon=True)
-            t.start()
-    except KeyboardInterrupt:
-        print("\n[sim] stopped")
-    finally:
-        sock.close()
+    if transport == "rtu":
+        serve_rtu(state, device, args.verbose)
+        return
+    serve_tcp(state, host, port)
 
 
 if __name__ == "__main__":
