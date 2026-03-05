@@ -19,6 +19,7 @@ target_include_directories(ai_safety_controller_application PUBLIC
 target_link_libraries(ai_safety_controller_application PUBLIC
   asc_common
   asc_sensor_factory
+  ai_safety_common
 )
 
 if(TARGET asc_battery)

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ai_safety_controller/common/device_status.hpp"
+#include "ai_safety_common/shared_memory_types.hpp"
 #include "ai_safety_controller/common/status.hpp"
 #include "ai_safety_controller/sensor_factory/sensor_factory.hpp"
 
@@ -34,6 +34,8 @@
 #endif
 
 namespace ai_safety_controller {
+
+using DeviceStatus = ai_safety_common::DeviceStatus;
 
 class DriverAdapter {
  public:

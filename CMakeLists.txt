@@ -12,6 +12,15 @@ option(ENABLE_MULTI_TURN_ENCODER "Enable multi turn encoder driver" ON)
 option(ENABLE_SOLAR "Enable solar driver" ON)
 option(ENABLE_SPD_LIDAR "Enable SPD lidar driver" ON)
 
+# 使用 ai_safety_common 的 DeviceStatus，与主工程统一；若父级已 add 则复用
+if(NOT TARGET ai_safety_common)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../ai_safety_common/CMakeLists.txt")
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../ai_safety_common ${CMAKE_BINARY_DIR}/ai_safety_common)
+  else()
+    message(FATAL_ERROR "ai_safety_common not found. Build from repo root or set ai_safety_common path.")
+  endif()
+endif()
+
 add_subdirectory(core)
 add_subdirectory(application)
 add_subdirectory(demo)
