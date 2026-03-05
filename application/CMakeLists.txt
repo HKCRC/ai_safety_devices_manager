@@ -1,5 +1,8 @@
+find_package(Boost REQUIRED)
+
 add_library(ai_safety_controller_application STATIC
   src/interface.cpp
+  src/devices_manager_client.cpp
 )
 
 target_include_directories(ai_safety_controller_application PUBLIC
@@ -20,6 +23,7 @@ target_link_libraries(ai_safety_controller_application PUBLIC
   asc_common
   asc_sensor_factory
   ai_safety_common
+  Boost::boost
 )
 
 if(TARGET asc_battery)

@@ -36,6 +36,8 @@
 namespace ai_safety_controller {
 
 using DeviceStatus = ai_safety_common::DeviceStatus;
+using AlertMessage = ai_safety_common::AlertMessage;
+using CraneState = ai_safety_common::CraneState;
 
 class DriverAdapter {
  public:
@@ -73,6 +75,7 @@ class Interface {
     std::string module_ip = "192.168.1.12";
     int module_port = 502;
     int module_slave_id = 3;
+    int battery_button_relay_channel = 1;
     double query_hz = 0.0;
   };
 
@@ -89,6 +92,8 @@ class Interface {
     int hook_slave_id = 3;
     int power_slave_id = 4;
     double query_hz = 0.0;
+    int both_speaker_play_window_ms = 5000;
+    int both_speaker_switch_gap_ms = 200;
   };
 
   struct EncoderDefaults {
@@ -139,6 +144,9 @@ class Interface {
   std::vector<std::string> availableCommands(const std::string& sensor) const;
   void setDeviceStatus(const DeviceStatus& data);
   DeviceStatus getDeviceStatus() const;
+  CraneState getCraneState() const;
+  AlertMessage getAlertMessage() const;
+  std::uint8_t getBatteryButtonSignals() const;
 
 #ifdef ASC_ENABLE_BATTERY
   battery::BatteryCore* battery();
@@ -189,6 +197,9 @@ class Interface {
   void printSnapshotTick();
   void updateTrolleyStateFromDrivers();
   void updateHookStateFromDriver();
+  void setCraneState(const CraneState& data);
+  void updateCraneStateFromEncoder(double turns_filtered);
+  void updateCraneStateFromLidarMeasurement(const std::string& id, double projected_distance_m);
 
 #ifdef ASC_ENABLE_BATTERY
   Status queryBattery(const std::vector<std::string>& args);
@@ -235,8 +246,15 @@ class Interface {
   std::unordered_map<std::string, Status> latest_query_status_;
   std::unordered_map<std::string, std::chrono::system_clock::time_point> latest_query_time_;
   DeviceStatus latest_device_status_;
+  CraneState latest_crane_state_;
+  AlertMessage latest_alert_message_;
+  std::uint8_t latest_battery_button_signals_ = 0;
+  std::unordered_map<std::string, double> latest_lidar_projected_distance_m_;
   mutable std::mutex snapshot_mutex_;
   mutable std::mutex device_status_mutex_;
+  mutable std::mutex crane_state_mutex_;
+  mutable std::mutex alert_message_mutex_;
+  mutable std::mutex battery_button_signals_mutex_;
   mutable std::mutex output_mutex_;
 
 #ifdef ASC_ENABLE_BATTERY

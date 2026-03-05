@@ -8,6 +8,7 @@
 #include <sstream>
 #include <string>
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
@@ -256,6 +257,47 @@ DeviceStatus Interface::getDeviceStatus() const {
   return latest_device_status_;
 }
 
+CraneState Interface::getCraneState() const {
+  std::lock_guard<std::mutex> lock(crane_state_mutex_);
+  return latest_crane_state_;
+}
+
+void Interface::setCraneState(const CraneState& data) {
+  std::lock_guard<std::mutex> lock(crane_state_mutex_);
+  latest_crane_state_ = data;
+}
+
+void Interface::updateCraneStateFromEncoder(double turns_filtered) {
+  // Normalized value placeholder: current integration maps filtered turns 1:1 to meters.
+  const double normalized_m = std::max(0.0, turns_filtered);
+  CraneState crane = getCraneState();
+  crane.hookToTrolleyDistanceM = static_cast<float>(normalized_m);
+  setCraneState(crane);
+}
+
+void Interface::updateCraneStateFromLidarMeasurement(const std::string& id, double projected_distance_m) {
+  std::lock_guard<std::mutex> lock(crane_state_mutex_);
+  latest_lidar_projected_distance_m_[id] = std::max(0.0, projected_distance_m);
+  if (latest_lidar_projected_distance_m_.empty()) return;
+
+  double sum = 0.0;
+  for (const std::pair<const std::string, double>& kv : latest_lidar_projected_distance_m_) {
+    sum += kv.second;
+  }
+  const double avg = sum / static_cast<double>(latest_lidar_projected_distance_m_.size());
+  latest_crane_state_.groundToTrolleyDistanceM = static_cast<float>(avg);
+}
+
+AlertMessage Interface::getAlertMessage() const {
+  std::lock_guard<std::mutex> lock(alert_message_mutex_);
+  return latest_alert_message_;
+}
+
+std::uint8_t Interface::getBatteryButtonSignals() const {
+  std::lock_guard<std::mutex> lock(battery_button_signals_mutex_);
+  return latest_battery_button_signals_;
+}
+
 std::string Interface::extractObjectBody(const std::string& json_text, const std::string& key) {
   const std::string marker = "\"" + key + "\"";
   const size_t key_pos = json_text.find(marker);
@@ -401,6 +443,11 @@ void Interface::applyIoRelayDefaultsFromJson(const std::string& json_text) {
   if (extractIntValue(body, "module_port", &module_port)) io_relay_defaults_.module_port = module_port;
   int module_slave_id = 0;
   if (extractIntValue(body, "module_slave_id", &module_slave_id)) io_relay_defaults_.module_slave_id = module_slave_id;
+  int battery_button_relay_channel = 0;
+  if (extractIntValue(body, "battery_button_relay_channel", &battery_button_relay_channel) &&
+      battery_button_relay_channel >= 1 && battery_button_relay_channel <= 16) {
+    io_relay_defaults_.battery_button_relay_channel = battery_button_relay_channel;
+  }
   double query_hz = 0.0;
   if (extractDoubleValue(body, "query_hz", &query_hz)) io_relay_defaults_.query_hz = query_hz;
 }
@@ -436,6 +483,22 @@ void Interface::applyHoistHookDefaultsFromJson(const std::string& json_text) {
   if (extractIntValue(body, "power_slave_id", &power_slave_id)) hoist_hook_defaults_.power_slave_id = power_slave_id;
   double query_hz = 0.0;
   if (extractDoubleValue(body, "query_hz", &query_hz)) hoist_hook_defaults_.query_hz = query_hz;
+  int both_speaker_play_window_ms = 0;
+  if (extractIntValue(body, "both_speaker_play_window_ms", &both_speaker_play_window_ms) &&
+      both_speaker_play_window_ms > 0) {
+    hoist_hook_defaults_.both_speaker_play_window_ms = both_speaker_play_window_ms;
+  }
+  int both_speaker_switch_gap_ms = 0;
+  if (extractIntValue(body, "both_speaker_switch_gap_ms", &both_speaker_switch_gap_ms) &&
+      both_speaker_switch_gap_ms > 0) {
+    hoist_hook_defaults_.both_speaker_switch_gap_ms = both_speaker_switch_gap_ms;
+  }
+  // Backward compatibility for old single-interval config.
+  int both_speaker_switch_interval_ms = 0;
+  if (extractIntValue(body, "both_speaker_switch_interval_ms", &both_speaker_switch_interval_ms) &&
+      both_speaker_switch_interval_ms > 0) {
+    hoist_hook_defaults_.both_speaker_play_window_ms = both_speaker_switch_interval_ms;
+  }
 }
 
 void Interface::applyEncoderDefaultsFromJson(const std::string& json_text) {
@@ -865,6 +928,9 @@ void Interface::updateTrolleyStateFromDrivers() {
     const multi_turn_encoder::MultiTurnEncoderCore::LatestData latest =
         multi_turn_encoder_->getLatest();
     encoder_ok = latest.valid && latest.connected;
+    if (encoder_ok) {
+      updateCraneStateFromEncoder(latest.turns_filtered);
+    }
   }
 #endif
 
@@ -1119,7 +1185,7 @@ Status Interface::init() {
     lidar->on_log.connect([id](const std::string& text) {
       std::cout << "[spd_lidar:" << id << "] " << text << "\n";
     });
-    lidar->on_frame.connect([this, id](const spd_lidar::SpdLidarFrame& frame) {
+    lidar->on_frame.connect([this, id, cfg](const spd_lidar::SpdLidarFrame& frame) {
       const double distance_m = static_cast<double>(frame.data) / 1000.0;
       std::cout << "[spd_lidar:" << id << "] "
                 << "distance=" << frame.data << "mm (" << std::fixed << std::setprecision(3)
@@ -1130,6 +1196,10 @@ Status Interface::init() {
                 << "\n";
       if (frame.valid_header && frame.checksum_ok) {
         trolley_lidar_has_valid_frame_.store(true, std::memory_order_relaxed);
+        constexpr double kPi = 3.14159265358979323846;
+        const double angle_rad = cfg.vertical_angle_to_vertical_deg * kPi / 180.0;
+        const double projected_m = distance_m * std::cos(angle_rad);
+        updateCraneStateFromLidarMeasurement(id, projected_m);
       }
     });
     spd_lidar::SpdLidarCore* lidar_raw = lidar.get();
