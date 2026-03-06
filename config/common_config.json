@@ -56,7 +56,7 @@
     },
     "multi_turn_encoder": {
       "_comment": "transport=rtu 使用串口参数；transport=tcp 使用 ip/port 参数",
-      "enable": true,
+      "enable": false,
       "transport": "rtu",
       "device": "/dev/ttyUSB1",
       "baud": 9600,
