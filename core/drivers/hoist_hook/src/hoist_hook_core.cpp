@@ -488,7 +488,7 @@ void HoistHookCore::genericRead(uint16_t address, uint16_t quantity, int functio
   }
 }
 
-void HoistHookCore::genericWrite(uint16_t address, uint16_t value, int function_code, bool skip_confirm) {
+void HoistHookCore::genericWrite(uint16_t address, uint16_t value, int function_code, bool skip_confirm, bool quiet) {
   const int fc = (function_code < 0) ? 0x06 : function_code;
   if (fc != 0x06) {
     std::cout << "❌ 当前仅支持 0x06 写入\n";
@@ -506,7 +506,7 @@ void HoistHookCore::genericWrite(uint16_t address, uint16_t value, int function_
 
   std::vector<uint8_t> response;
   if (!sendModbusPacket(packet, &response, "吊钩写寄存器")) return;
-  if (print_enabled_) {
+  if (print_enabled_ && !quiet) {
     if (response == packet) {
       std::cout << "✅ 写入成功：0x" << std::hex << std::uppercase << std::setw(4)
                 << std::setfill('0') << address << std::dec << " <= " << value << "\n";
@@ -516,8 +516,20 @@ void HoistHookCore::genericWrite(uint16_t address, uint16_t value, int function_
   }
 }
 
-void HoistHookCore::controlSpeaker(const std::string& mode) {
+void HoistHookCore::controlSpeaker(const std::string& mode, bool quiet) {
   // 文档：DEC1=7m, DEC2=3m，为独立寄存器，写1触发对应语音
+  // 7m_off/3m_off 只关对应通道，不写另一路；off 两路都关（用于“双路都在播”时一起停）
+  if (mode == "7m_off") {
+    if (!quiet) std::cout << "🔊 设置喇叭模式: 7m_off（仅关 7m）\n";
+    genericWrite(0x0001, 0, 0x06, true, quiet);
+    return;
+  }
+  if (mode == "3m_off") {
+    if (!quiet) std::cout << "🔊 设置喇叭模式: 3m_off（仅关 3m）\n";
+    genericWrite(0x0002, 0, 0x06, true, quiet);
+    return;
+  }
+
   uint16_t v7 = 0;
   uint16_t v3 = 0;
   if (mode == "off") {
@@ -533,18 +545,16 @@ void HoistHookCore::controlSpeaker(const std::string& mode) {
     v7 = 1;
     v3 = 1;
   } else {
-    std::cout << "❌ speaker 模式仅支持 off/7m/3m/both\n";
+    std::cout << "❌ speaker 模式仅支持 off/7m/3m/both/7m_off/3m_off\n";
     return;
   }
 
-  // 交互控制类命令在 print_status=false 时也需要有回显
-  std::cout << "🔊 设置喇叭模式: " << mode << "\n";
-  // 使用 skip_confirm 避免 off 时写两格弹出两次 YES，只生效第一次导致喇叭停不下来
+  if (!quiet) std::cout << "🔊 设置喇叭模式: " << mode << "\n";
   if (v7 != 0 || mode == "off") {
-    genericWrite(0x0001, v7, 0x06, true);
+    genericWrite(0x0001, v7, 0x06, true, quiet);
   }
   if (v3 != 0 || mode == "off") {
-    genericWrite(0x0002, v3, 0x06, true);
+    genericWrite(0x0002, v3, 0x06, true, quiet);
   }
 }
 

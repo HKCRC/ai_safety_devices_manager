@@ -1366,7 +1366,7 @@ Status Interface::queryHoistHook(const std::vector<std::string>& args) {
     std::cout << "[hoist_hook] usage:\n"
               << "  hoist_hook map\n"
               << "  hoist_hook speaker|light|rfid|power|gps|all|heartbeat|mode\n"
-              << "  hoist_hook speaker_ctl <off|7m|3m|both>\n"
+              << "  hoist_hook speaker_ctl <off|7m|3m|both|7m_off|3m_off>\n"
               << "  hoist_hook light_ctl <on|off>\n"
               << "  hoist_hook volume <0-30>\n"
               << "  hoist_hook get <addr> [qty] [fc]\n"
@@ -1380,8 +1380,9 @@ Status Interface::queryHoistHook(const std::vector<std::string>& args) {
     hoist_hook_->queryHookInfo(cmd);
   }
   else if (cmd == "speaker_ctl") {
-    if (args.size() < 2) return Status{false, "usage: hoist_hook speaker_ctl <off|7m|3m|both>"};
-    hoist_hook_->controlSpeaker(args[1]);
+    if (args.size() < 2) return Status{false, "usage: hoist_hook speaker_ctl <off|7m|3m|both|7m_off|3m_off> [quiet]"};
+    const bool quiet = (args.size() >= 3 && args[2] == "quiet");
+    hoist_hook_->controlSpeaker(args[1], quiet);
   } else if (cmd == "light_ctl") {
     if (args.size() < 2) return Status{false, "usage: hoist_hook light_ctl <on|off>"};
     hoist_hook_->controlWarningLight(args[1]);
@@ -1407,7 +1408,7 @@ Status Interface::queryHoistHook(const std::vector<std::string>& args) {
     hoist_hook_->genericWrite(static_cast<uint16_t>(addr), static_cast<uint16_t>(val), fc);
   } else {
     std::cout << "[hoist_hook] unknown command: " << cmd << "\n"
-              << "  usage: hoist_hook speaker_ctl <off|7m|3m|both>\n"
+              << "  usage: hoist_hook speaker_ctl <off|7m|3m|both|7m_off|3m_off>\n"
               << "         hoist_hook light_ctl <on|off>\n"
               << "         hoist_hook volume <0-30>\n"
               << "         hoist_hook speaker|light|rfid|power|gps|all\n"

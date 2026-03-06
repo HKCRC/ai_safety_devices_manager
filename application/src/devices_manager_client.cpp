@@ -20,19 +20,26 @@ const char* DevicesManagerClient::toSpeakerCtlArg(SpeakerMode mode) {
       return "7m";
     case SpeakerMode::M3:
       return "3m";
+    case SpeakerMode::Off7MOnly:
+      return "7m_off";
+    case SpeakerMode::Off3MOnly:
+      return "3m_off";
     case SpeakerMode::Off:
     default:
       return "off";
   }
 }
 
-bool DevicesManagerClient::applySpeakerMode(SpeakerMode mode) {
+bool DevicesManagerClient::applySpeakerMode(SpeakerMode mode, bool quiet) {
   if (!impl_) return false;
   if (applied_speaker_mode_.has_value() && applied_speaker_mode_.value() == mode) return true;
-  const std::vector<std::string> args{"speaker_ctl", toSpeakerCtlArg(mode)};
+  std::vector<std::string> args{"speaker_ctl", toSpeakerCtlArg(mode)};
+  if (quiet) args.push_back("quiet");
   const Status ctl = impl_->dispatchCommand("hoist_hook", args);
   if (ctl.ok) {
-    applied_speaker_mode_ = mode;
+    applied_speaker_mode_ = (mode == SpeakerMode::Off7MOnly || mode == SpeakerMode::Off3MOnly)
+                                ? SpeakerMode::Off
+                                : mode;
     return true;
   }
   return false;
@@ -46,10 +53,11 @@ void DevicesManagerClient::applySpeakerControlByAlert(const ai_safety_common::Al
   const auto now = std::chrono::steady_clock::now();
 
   if (trig3 && trig7) {
+    // 双路轮播：quiet=true 避免刷屏干扰命令行输入
     if (!both_round_robin_active_) {
       both_round_robin_active_ = true;
       both_stage_ = BothSpeakerStage::Playing3M;
-      if (applySpeakerMode(SpeakerMode::M3)) {
+      if (applySpeakerMode(SpeakerMode::M3, true)) {
         both_stage_deadline_ = now + both_play_window_;
       } else {
         both_stage_deadline_ = now + std::chrono::milliseconds(200);
@@ -62,7 +70,7 @@ void DevicesManagerClient::applySpeakerControlByAlert(const ai_safety_common::Al
 
     switch (both_stage_) {
       case BothSpeakerStage::Playing3M:
-        if (applySpeakerMode(SpeakerMode::Off)) {
+        if (applySpeakerMode(SpeakerMode::Off, true)) {
           both_stage_ = BothSpeakerStage::GapAfter3M;
           both_stage_deadline_ = now + both_switch_gap_;
         } else {
@@ -70,7 +78,7 @@ void DevicesManagerClient::applySpeakerControlByAlert(const ai_safety_common::Al
         }
         break;
       case BothSpeakerStage::GapAfter3M:
-        if (applySpeakerMode(SpeakerMode::M7)) {
+        if (applySpeakerMode(SpeakerMode::M7, true)) {
           both_stage_ = BothSpeakerStage::Playing7M;
           both_stage_deadline_ = now + both_play_window_;
         } else {
@@ -78,7 +86,7 @@ void DevicesManagerClient::applySpeakerControlByAlert(const ai_safety_common::Al
         }
         break;
       case BothSpeakerStage::Playing7M:
-        if (applySpeakerMode(SpeakerMode::Off)) {
+        if (applySpeakerMode(SpeakerMode::Off, true)) {
           both_stage_ = BothSpeakerStage::GapAfter7M;
           both_stage_deadline_ = now + both_switch_gap_;
         } else {
@@ -86,7 +94,7 @@ void DevicesManagerClient::applySpeakerControlByAlert(const ai_safety_common::Al
         }
         break;
       case BothSpeakerStage::GapAfter7M:
-        if (applySpeakerMode(SpeakerMode::M3)) {
+        if (applySpeakerMode(SpeakerMode::M3, true)) {
           both_stage_ = BothSpeakerStage::Playing3M;
           both_stage_deadline_ = now + both_play_window_;
         } else {
@@ -97,13 +105,27 @@ void DevicesManagerClient::applySpeakerControlByAlert(const ai_safety_common::Al
     return;
   }
 
+  const bool was_both_round_robin = both_round_robin_active_;
   both_round_robin_active_ = false;
   if (trig3) {
     (void)applySpeakerMode(SpeakerMode::M3);
   } else if (trig7) {
     (void)applySpeakerMode(SpeakerMode::M7);
   } else {
-    (void)applySpeakerMode(SpeakerMode::Off);
+    // 关喇叭：双路轮播刚结束则两路都关；否则只关当前播的那一路
+    if (was_both_round_robin) {
+      (void)applySpeakerMode(SpeakerMode::Off);
+    } else if (applied_speaker_mode_.has_value()) {
+      if (applied_speaker_mode_.value() == SpeakerMode::M3) {
+        (void)applySpeakerMode(SpeakerMode::Off3MOnly);
+      } else if (applied_speaker_mode_.value() == SpeakerMode::M7) {
+        (void)applySpeakerMode(SpeakerMode::Off7MOnly);
+      } else {
+        (void)applySpeakerMode(SpeakerMode::Off);
+      }
+    } else {
+      (void)applySpeakerMode(SpeakerMode::Off);
+    }
   }
 }
 

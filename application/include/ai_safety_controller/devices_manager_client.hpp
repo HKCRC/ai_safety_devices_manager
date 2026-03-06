@@ -84,9 +84,11 @@ class DevicesManagerClient {
 
  private:
   enum class SpeakerMode {
-    Off,
+    Off,       // 两路都关
     M7,
     M3,
+    Off7MOnly, // 只关 7m，不写 3m 寄存器
+    Off3MOnly, // 只关 3m，不写 7m 寄存器
   };
   enum class BothSpeakerStage {
     Playing3M,
@@ -98,7 +100,7 @@ class DevicesManagerClient {
 
   void notifyThreadFunc();
   void applySpeakerControlByAlert(const ai_safety_common::AlertMessage& alert);
-  bool applySpeakerMode(SpeakerMode mode);
+  bool applySpeakerMode(SpeakerMode mode, bool quiet = false);
   void applyBatteryButtonControl(std::uint8_t raw_cmd);
   static const char* toSpeakerCtlArg(SpeakerMode mode);
 

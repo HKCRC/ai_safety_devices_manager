@@ -29,11 +29,11 @@ class HoistHookCore {
 
   void printRegisterGroups() const;
   void queryHookInfo(const std::string& info_type);
-  void controlSpeaker(const std::string& mode);
+  void controlSpeaker(const std::string& mode, bool quiet = false);
   void controlWarningLight(const std::string& status);
   void genericRead(uint16_t address, uint16_t quantity, int function_code);
-  /** skip_confirm=true 用于喇叭/灯/音量等交互控制，不弹 YES 确认，避免 off 需写两格时只生效一次 */
-  void genericWrite(uint16_t address, uint16_t value, int function_code, bool skip_confirm = false);
+  /** skip_confirm=true 用于喇叭/灯/音量等交互控制；quiet=true 不打印写入成功，用于轮播时避免刷屏 */
+  void genericWrite(uint16_t address, uint16_t value, int function_code, bool skip_confirm = false, bool quiet = false);
 
   static bool parseNumber(const std::string& text, int* out);
   static bool parseFunctionCode(const std::string& text,
