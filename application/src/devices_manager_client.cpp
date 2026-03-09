@@ -155,16 +155,14 @@ void DevicesManagerClient::notifyThreadFunc() {
     if (notify_stop_) break;
     if (impl_) {
       if (!SignalGetAlertMessage.empty()) {
-        auto alert_opt = SignalGetAlertMessage();
-        if (alert_opt) {
-          applySpeakerControlByAlert(*alert_opt);
-        }
+        ai_safety_common::AlertMessage alert{};
+        SignalGetAlertMessage(alert);
+        applySpeakerControlByAlert(alert);
       }
       if (!SignalGetBatteryButtonSignals.empty()) {
-        auto cmd_opt = SignalGetBatteryButtonSignals();
-        if (cmd_opt) {
-          applyBatteryButtonControl(*cmd_opt);
-        }
+        std::uint8_t raw_cmd = 0;
+        SignalGetBatteryButtonSignals(raw_cmd);
+        applyBatteryButtonControl(raw_cmd);
       }
       const auto now = std::chrono::steady_clock::now();
       if (now - last_push_ts_ >= std::chrono::seconds(1)) {

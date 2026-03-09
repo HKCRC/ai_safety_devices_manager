@@ -213,13 +213,13 @@ int main(int argc, char* argv[]) {
   ai_safety_controller::DevicesManagerClient client;
 
   // Pull 槽：从 state 读取，由终端命令更新
-  client.SignalGetAlertMessage.connect([&state]() -> const ai_safety_common::AlertMessage& {
+  client.SignalGetAlertMessage.connect([&state](ai_safety_common::AlertMessage& alert) {
     std::lock_guard<std::mutex> lock(state.mtx);
-    return state.pull_alert;
+    alert = state.pull_alert;
   });
-  client.SignalGetBatteryButtonSignals.connect([&state]() -> const std::uint8_t& {
+  client.SignalGetBatteryButtonSignals.connect([&state](std::uint8_t& power_cmd) {
     std::lock_guard<std::mutex> lock(state.mtx);
-    return state.pull_power;
+    power_cmd = state.pull_power;
   });
 
   if (!client.loadConfig(config_path).ok) {

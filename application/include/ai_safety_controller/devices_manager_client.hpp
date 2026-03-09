@@ -57,13 +57,13 @@ class DevicesManagerClient {
    * 获取当前报警状态（四个 bool 字段）。
    * 字段定义见 ai_safety_common::AlertMessage。
    */
-  boost::signals2::signal<const ai_safety_common::AlertMessage&()> SignalGetAlertMessage;
+  boost::signals2::signal<void(ai_safety_common::AlertMessage&)> SignalGetAlertMessage;
 
   /**
    * 获取电源控制指令（Battery Button）：
    * 0 = None, 1 = PowerOn, 2 = PowerOff。
    */
-  boost::signals2::signal<const std::uint8_t&()> SignalGetBatteryButtonSignals;
+  boost::signals2::signal<void(std::uint8_t&)> SignalGetBatteryButtonSignals;
 
   /**
    * 定时推送信号：内部每秒调用 getDeviceStatus() 并触发此信号，主工程 connect 接收。
