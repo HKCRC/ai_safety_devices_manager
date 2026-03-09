@@ -808,6 +808,9 @@ void Interface::startAutoQueryPolling() {
 #ifdef ASC_ENABLE_HOIST_HOOK
   add_task("hoist_hook", hoist_hook_defaults_.query_hz);
 #endif
+#ifdef ASC_ENABLE_SPD_LIDAR
+  add_task("spd_lidar", spd_lidar_query_hz_);
+#endif
 
   if (!tasks.empty()) {
     auto_query_threads_.emplace_back([this, tasks]() mutable {
@@ -823,6 +826,9 @@ void Interface::startAutoQueryPolling() {
             updateSolarChargeStateFromDriver();
           } else if (tasks[i].sensor == "hoist_hook") {
             updateHookStateFromDriver();
+          } else if (tasks[i].sensor == "spd_lidar") {
+            // 单点激光雷达：发送 single 查询触发测距，响应经 on_frame 更新 groundToTrolley
+            query("spd_lidar", std::vector<std::string>{"send", "all", "single"});
           }
           tasks[i].next_due = std::chrono::steady_clock::now() + tasks[i].period;
           ran = true;
@@ -1182,18 +1188,9 @@ Status Interface::init() {
     if (!cfg.enable) continue;
     std::unique_ptr<spd_lidar::SpdLidarCore> lidar = std::make_unique<spd_lidar::SpdLidarCore>();
     const std::string id = cfg.id;
-    lidar->on_log.connect([id](const std::string& text) {
-      std::cout << "[spd_lidar:" << id << "] " << text << "\n";
-    });
+    lidar->on_log.connect([](const std::string&) {});  // 静默，避免轮询刷屏
     lidar->on_frame.connect([this, id, cfg](const spd_lidar::SpdLidarFrame& frame) {
       const double distance_m = static_cast<double>(frame.data) / 1000.0;
-      std::cout << "[spd_lidar:" << id << "] "
-                << "distance=" << frame.data << "mm (" << std::fixed << std::setprecision(3)
-                << distance_m << "m)"
-                << " status=0x" << std::hex << std::uppercase << static_cast<int>(frame.status)
-                << std::dec
-                << " checksum_ok=" << (frame.checksum_ok ? "true" : "false")
-                << "\n";
       if (frame.valid_header && frame.checksum_ok) {
         trolley_lidar_has_valid_frame_.store(true, std::memory_order_relaxed);
         constexpr double kPi = 3.14159265358979323846;
