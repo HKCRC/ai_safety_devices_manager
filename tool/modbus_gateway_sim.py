@@ -6,6 +6,7 @@ import os
 import socket
 import struct
 import threading
+import time
 from pathlib import Path
 
 
@@ -125,9 +126,63 @@ class GatewayState:
         # solar control coils: 0x0000~0x000E
         self.solar_coils = [False] * 15
 
+        # dynamic simulation timeline
+        self._sim_start_ts = time.monotonic()
+
+    def _update_dynamic_locked(self):
+        # Built-in dynamic model: no external config required.
+        t = max(0.0, time.monotonic() - self._sim_start_ts)
+
+        # 10-minute triangle cycle for battery SOC: 95% -> 15% -> 95%
+        period = 600.0
+        phase = (t % period) / period
+        ratio = 1.0 - abs(phase * 2.0 - 1.0)  # 0..1..0
+        soc_pct = 15.0 + ratio * 80.0
+
+        charging = 1 if phase >= 0.5 else 0
+        current_a = (1.6 + 1.2 * math.sin(t / 17.0)) * (1.0 if charging else -1.0)
+        voltage_v = 47.0 + soc_pct * 0.06 + (0.3 if charging else -0.2)
+
+        remain_discharge = int(max(0.0, (soc_pct / 100.0) * 360.0))
+        remain_charge = int(max(0.0, ((100.0 - soc_pct) / 100.0) * 180.0))
+
+        self.battery_regs[0x0000] = int(soc_pct * 100.0)  # SOC: 0.01%
+        self.battery_regs[0x0001] = i16_to_u16(int(current_a * 100.0))  # 0.01A signed
+        self.battery_regs[0x0002] = int(voltage_v * 100.0)  # 0.01V
+        self.battery_regs[0x0007] = remain_discharge
+        self.battery_regs[0x0008] = remain_charge if charging else 0
+        self.battery_regs[0x000A] = 1 if charging else 0
+        self.battery_regs[0x000B] = 1 if not charging else 0
+
+        # Cell voltages / temperatures drift with SOC and time.
+        for i in range(16):
+            self.battery_regs[0x0010 + i] = int(3050 + soc_pct * 10 + 8 * math.sin(t / 11.0 + i * 0.4))
+        self.battery_regs[0x0050] = i16_to_u16(int((24.0 + 3.0 * math.sin(t / 35.0)) * 10.0))
+        self.battery_regs[0x0051] = i16_to_u16(int((25.0 + 3.5 * math.sin(t / 37.0 + 0.8)) * 10.0))
+
+        # Solar side follows day-like power wave.
+        daylight = max(0.0, math.sin(t / 30.0))
+        pv_voltage = 34.0 + 18.0 * daylight
+        pv_current = 0.5 + 4.8 * daylight
+        pv_power = int(pv_voltage * pv_current * 100.0)
+        load_power = int((7.5 + 1.8 * math.sin(t / 12.0 + 0.6)) * 1000.0)
+        batt_current = int((0.2 + 1.8 * daylight - 0.6) * 100.0)
+
+        self.solar_regs[0x3100] = int(pv_voltage * 100.0)
+        self.solar_regs[0x3101] = int(pv_current * 100.0)
+        self.solar_regs[0x3102] = pv_power & 0xFFFF
+        self.solar_regs[0x3103] = (pv_power >> 16) & 0xFFFF
+        self.solar_regs[0x310E] = load_power & 0xFFFF
+        self.solar_regs[0x310F] = (load_power >> 16) & 0xFFFF
+        self.solar_regs[0x311A] = int(soc_pct)
+        self.solar_regs[0x331A] = self.battery_regs[0x0002]
+        self.solar_regs[0x331B] = batt_current & 0xFFFF
+        self.solar_regs[0x331C] = (batt_current >> 16) & 0xFFFF
+
     def read_holding(self, unit_id: int, addr: int, qty: int):
         out = []
         with self.lock:
+            self._update_dynamic_locked()
             if unit_id == self.battery_uid:
                 for i in range(qty):
                     out.append(self.battery_regs.get(addr + i, 0))

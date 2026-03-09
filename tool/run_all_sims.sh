@@ -93,7 +93,7 @@ PY
   else
     start_one "hoist_hook" "python3 hoist_hook_tcp_sim.py --config \"${CONFIG_PATH}\""
   fi
-  start_one "multi_turn_encoder" "python3 multi_turn_encoder_tcp_sim.py --config \"${CONFIG_PATH}\""
+  start_one "multi_turn_encoder" "python3 multi_turn_encoder_rtu_sim.py --config \"${CONFIG_PATH}\""
   start_one "spd_lidar" "python3 spd_lidar_dual_sim.py --config \"${CONFIG_PATH}\""
 
   echo "[ok] all simulators started."

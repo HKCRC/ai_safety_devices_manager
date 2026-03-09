@@ -2,6 +2,7 @@
 import argparse
 import errno
 import json
+import math
 import os
 import pty
 import socket
@@ -29,12 +30,14 @@ class EncoderState:
     def total_turns(self) -> float:
         with self._lock:
             now = time.time()
+            # Built-in speed modulation for richer dynamic simulation.
+            dynamic_speed = self.speed_rps * (1.0 + 0.35 * math.sin(now / 6.0))
             if self.turns_mode == "read_rate":
                 dt = max(0.0, now - self.last_update_time)
-                self.turns += self.speed_rps * dt
+                self.turns += dynamic_speed * dt
                 self.last_update_time = now
                 return self.turns
-            return self.start_turns + self.speed_rps * (now - self.start_time)
+            return self.start_turns + dynamic_speed * (now - self.start_time)
 
     def set_position(self, position: int) -> None:
         # For compatibility, "position" is interpreted as whole turns.

@@ -18,11 +18,11 @@ class Interface;
 /**
  * 门面类：供主工程（如 main.cpp）统一调用设备管理能力。
  * 内部持有 Interface，对外暴露 loadConfig / init / start / stop / getDeviceStatus，
- * 以及 setDeviceStatus（定时推送 DeviceStatus 信号，与 SignalSendAlarm 用法一致）。
- * 以及 setCraneState（对外 CraneState 信号接口，供主工程按需 connect）。
+ * 以及 SignalSendDeviceStatus（定时推送 DeviceStatus 信号，与 SignalSendAlarm 用法一致）。
+ * 以及 SignalSendCraneState（对外 CraneState 信号接口，供主工程按需 connect）。
  * 用法示例（主工程侧）：
  *   DevicesManagerClient client;
- *   client.setDeviceStatus.connect([](ai_safety_common::DeviceStatus d) { ... });
+ *   client.SignalSendDeviceStatus.connect([](ai_safety_common::DeviceStatus d) { ... });
  *   if (!client.loadConfig(config_path).ok) { ... }
  *   if (!client.init().ok) { ... }
  *   client.start();  // 内部每秒推送一次 DeviceStatus
@@ -39,7 +39,7 @@ class DevicesManagerClient {
   Status loadConfig(const std::string& path);
   /** 初始化设备与驱动，同 Interface::init */
   Status init();
-  /** 启动轮询等，同 Interface::start；同时启动定时推送线程，每秒触发 setDeviceStatus 信号 */
+  /** 启动轮询等，同 Interface::start；同时启动定时推送线程，每秒触发 SignalSendDeviceStatus 信号 */
   Status start();
   /** 停止轮询与定时推送，同 Interface::stop */
   Status stop();
@@ -57,25 +57,25 @@ class DevicesManagerClient {
    * 获取当前报警状态（四个 bool 字段）。
    * 字段定义见 ai_safety_common::AlertMessage。
    */
-  boost::signals2::signal<ai_safety_common::AlertMessage()> getAlertMessage;
+  boost::signals2::signal<const ai_safety_common::AlertMessage&()> SignalGetAlertMessage;
 
   /**
    * 获取电源控制指令（Battery Button）：
    * 0 = None, 1 = PowerOn, 2 = PowerOff。
    */
-  boost::signals2::signal<std::uint8_t()> getBatteryButtonSignals;
+  boost::signals2::signal<const std::uint8_t&()> SignalGetBatteryButtonSignals;
 
   /**
    * 定时推送信号：内部每秒调用 getDeviceStatus() 并触发此信号，主工程 connect 接收。
    * 用法与 AISampler::SignalSendAlarm 一致；回调可能在内部线程执行，若需更新 Qt UI 请投递到主线程。
    */
-  boost::signals2::signal<void(ai_safety_common::DeviceStatus)> setDeviceStatus;
+  boost::signals2::signal<void(ai_safety_common::DeviceStatus)> SignalSendDeviceStatus;
 
   /**
    * 对外 CraneState 信号接口（signal-slot 风格）。
    * 当前仅暴露接口，内部如何填充 CraneState 后续再接入。
    */
-  boost::signals2::signal<void(const ai_safety_common::CraneState&)> setCraneState;
+  boost::signals2::signal<void(const ai_safety_common::CraneState&)> SignalSendCraneState;
 
   /** 是否已成功 init（且未析构） */
   bool isInitialized() const;

@@ -1,6 +1,6 @@
 /**
  * main_test: 仅与 ai_safety_devices_manager 交互的测试程序。
- * - Pull 槽：通过终端命令设置 getAlertMessage / getBatteryButtonSignals 的返回值。
+ * - Pull 槽：通过终端命令设置 SignalGetAlertMessage / SignalGetBatteryButtonSignals 的返回值。
  * - Push 槽：设备管理定时推送的数据会缓存，可通过终端命令读取并打印。
  *
  * 命令: help | alert <enable3|enable7|3m|7m> <on|off> | power <none|on|off> | status | crane | quit
@@ -67,8 +67,8 @@ struct TestState {
 
 void print_help() {
   std::cout << "  help                    - 本帮助\n"
-            << "  alert [key on|off]...   - 设置 getAlertMessage，可多组 (key: enable3 enable7 3m 7m)\n"
-            << "  power <none|on|off>     - 设置 getBatteryButtonSignals 返回值\n"
+            << "  alert [key on|off]...   - 设置 SignalGetAlertMessage，可多组 (key: enable3 enable7 3m 7m)\n"
+            << "  power <none|on|off>     - 设置 SignalGetBatteryButtonSignals 返回值\n"
             << "  status                  - 从 push 槽读取并打印最近一次 DeviceStatus\n"
             << "  crane                   - 从 push 槽读取并打印最近一次 CraneState\n"
             << "  quit                    - 退出\n";
@@ -96,7 +96,7 @@ bool run_command(TestState& state, const std::string& line) {
   if (cmd == "status") {
     std::lock_guard<std::mutex> lock(state.mtx);
     if (!state.has_device_status) {
-      std::cout << "[push] 尚未收到 setDeviceStatus，请稍后再试\n";
+      std::cout << "[push] 尚未收到 SignalSendDeviceStatus，请稍后再试\n";
       return true;
     }
     const auto& d = state.last_device_status;
@@ -111,7 +111,7 @@ bool run_command(TestState& state, const std::string& line) {
   if (cmd == "crane") {
     std::lock_guard<std::mutex> lock(state.mtx);
     if (!state.has_crane_state) {
-      std::cout << "[push] 尚未收到 setCraneState，请稍后再试\n";
+      std::cout << "[push] 尚未收到 SignalSendCraneState，请稍后再试\n";
       return true;
     }
     const auto& c = state.last_crane_state;
@@ -143,7 +143,7 @@ bool run_command(TestState& state, const std::string& line) {
       std::cout << "usage: alert [<enable3|enable7|3m|7m> <on|off>]+\n";
       return true;
     }
-    std::cout << "[pull] getAlertMessage: Enable3Alert=" << state.pull_alert.Enable3Alert
+    std::cout << "[pull] SignalGetAlertMessage: Enable3Alert=" << state.pull_alert.Enable3Alert
               << " Enable7Alert=" << state.pull_alert.Enable7Alert
               << " Alert3M=" << state.pull_alert.Alert3M
               << " Alert7M=" << state.pull_alert.Alert7M << "\n";
@@ -163,7 +163,7 @@ bool run_command(TestState& state, const std::string& line) {
       std::cout << "expected none|on|off\n";
       return true;
     }
-    std::cout << "[pull] getBatteryButtonSignals: " << arg << " (" << static_cast<int>(state.pull_power) << ")\n";
+    std::cout << "[pull] SignalGetBatteryButtonSignals: " << arg << " (" << static_cast<int>(state.pull_power) << ")\n";
     return true;
   }
 
@@ -213,11 +213,11 @@ int main(int argc, char* argv[]) {
   ai_safety_controller::DevicesManagerClient client;
 
   // Pull 槽：从 state 读取，由终端命令更新
-  client.getAlertMessage.connect([&state]() {
+  client.SignalGetAlertMessage.connect([&state]() -> const ai_safety_common::AlertMessage& {
     std::lock_guard<std::mutex> lock(state.mtx);
     return state.pull_alert;
   });
-  client.getBatteryButtonSignals.connect([&state]() {
+  client.SignalGetBatteryButtonSignals.connect([&state]() -> const std::uint8_t& {
     std::lock_guard<std::mutex> lock(state.mtx);
     return state.pull_power;
   });
@@ -232,12 +232,12 @@ int main(int argc, char* argv[]) {
   }
 
   // Push 槽：只缓存最新数据，不打印；用户输入 status/crane 时再按需打印
-  client.setDeviceStatus.connect([&state](const ai_safety_common::DeviceStatus& d) {
+  client.SignalSendDeviceStatus.connect([&state](const ai_safety_common::DeviceStatus& d) {
     std::lock_guard<std::mutex> lock(state.mtx);
     state.last_device_status = d;
     state.has_device_status = true;
   });
-  client.setCraneState.connect([&state](const ai_safety_common::CraneState& c) {
+  client.SignalSendCraneState.connect([&state](const ai_safety_common::CraneState& c) {
     std::lock_guard<std::mutex> lock(state.mtx);
     state.last_crane_state = c;
     state.has_crane_state = true;

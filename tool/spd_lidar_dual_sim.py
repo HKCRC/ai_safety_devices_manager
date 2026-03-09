@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import socket
 import threading
@@ -82,10 +83,13 @@ class LidarInstanceServer:
         self.device_ip = str(one.get("device_ip", "127.0.0.1"))
         self.device_port = int(one.get("device_port", 8234))
         self.distance_mm = int(one.get("sim_distance_mm", 1234))
+        self.base_distance_mm = self.distance_mm
         self.status = int(one.get("sim_status", 0))
         self.running = True
         self._conn = None
         self._sock = None
+        self._sim_start_ts = time.monotonic()
+        self._phase_bias = 0.0 if self.id.lower() == "front" else 1.7
 
         # Keep endpoint-selection semantics aligned with Interface::buildLidarEndpoint():
         # mode=server -> connect/listen via local_ip/local_port
@@ -98,8 +102,20 @@ class LidarInstanceServer:
         self.port = default_port if default_port > 0 else endpoint_port
 
     def _build_single_reply(self):
-        d = self.distance_mm & 0xFFFF
-        frame7 = [HDR1, HDR2, CMD_SINGLE, self.status & 0xFF, 0x00, (d >> 8) & 0xFF, d & 0xFF]
+        # Built-in dynamic distance model, no external config needed.
+        t = max(0.0, time.monotonic() - self._sim_start_ts)
+        wave = math.sin(t / 2.5 + self._phase_bias) + 0.35 * math.sin(t / 0.9 + self._phase_bias * 1.3)
+        d = int(self.base_distance_mm + 280.0 * wave)
+        d = max(180, min(8000, d))
+        self.distance_mm = d
+
+        status = self.status & 0xFF
+        if d < 700:
+            status |= 0x01
+        else:
+            status &= 0xFE
+
+        frame7 = [HDR1, HDR2, CMD_SINGLE, status, 0x00, (d >> 8) & 0xFF, d & 0xFF]
         return bytes(frame7 + [checksum_recv(frame7)])
 
     def _try_parse_frame(self, data: bytes):
