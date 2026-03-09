@@ -195,7 +195,7 @@ bool read_line_with_timeout(std::string& line, int timeout_ms) {
 
 int main(int argc, char* argv[]) {
   // 默认使用本模块 config；从仓库根目录运行时可通过参数传入路径
-  std::string config_path = "config/common_config.json";
+  std::string config_path = "../config/common_config.json";
   if (argc >= 2 && argv[1][0] != '\0') {
     config_path = argv[1];
   }
