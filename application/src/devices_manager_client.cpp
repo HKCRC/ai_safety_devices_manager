@@ -243,6 +243,11 @@ ai_safety_common::CraneState DevicesManagerClient::getCraneState() const {
   return impl_->getCraneState();
 }
 
+std::unordered_map<std::string, std::uint16_t> DevicesManagerClient::getLatestLidarRawMm() const {
+  if (!impl_) return {};
+  return impl_->getLatestLidarRawMm();
+}
+
 bool DevicesManagerClient::isInitialized() const { return initialized_; }
 
 bool DevicesManagerClient::isStarted() const { return started_; }

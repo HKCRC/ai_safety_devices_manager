@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace ai_safety_controller {
@@ -53,6 +54,8 @@ class DevicesManagerClient {
 
   /** 获取当前吊钩/小车距离状态。 */
   ai_safety_common::CraneState getCraneState() const;
+  /** 获取各单点激光最近一次有效原始值（单位 mm，key 为实例 id）。 */
+  std::unordered_map<std::string, std::uint16_t> getLatestLidarRawMm() const;
 
   /**
    * 获取当前报警状态（四个 bool 字段）。

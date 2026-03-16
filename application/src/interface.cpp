@@ -49,6 +49,16 @@ std::string formatEpochSeconds(double ts) {
   return oss.str();
 }
 
+std::string formatHexBytes(const std::vector<uint8_t>& data) {
+  std::ostringstream oss;
+  for (size_t i = 0; i < data.size(); ++i) {
+    if (i > 0) oss << " ";
+    oss << "0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0')
+        << static_cast<int>(data[i]);
+  }
+  return oss.str();
+}
+
 bool spdLidarExchangeTcp(const ai_safety_controller::Interface::SpdLidarInstanceDefaults& cfg,
                          const std::vector<uint8_t>& request,
                          std::vector<uint8_t>* response,
@@ -56,16 +66,112 @@ bool spdLidarExchangeTcp(const ai_safety_controller::Interface::SpdLidarInstance
   if (!response) return false;
   response->clear();
 
-  // Current simulator/integration uses client mode: connect to device endpoint.
-  std::string ip = cfg.device_ip;
-  int port = cfg.device_port;
+  const auto exchange_on_connected_fd =
+      [&request, response, error](int fd) -> bool {
+        timeval tv{};
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        const ssize_t sent = ::send(fd, request.data(), request.size(), 0);
+        if (sent < 0 || static_cast<size_t>(sent) != request.size()) {
+          if (error) *error = std::string("send failed: ") + std::strerror(errno);
+          return false;
+        }
+
+        uint8_t buf[256];
+        const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+        if (n <= 0) {
+          if (error) *error = std::string("recv failed: ") + std::strerror(errno);
+          return false;
+        }
+        response->assign(buf, buf + n);
+        return true;
+      };
+
   if (cfg.mode == "server") {
-    // Fallback for server-mode configs: try local endpoint.
-    ip = cfg.local_ip;
-    port = cfg.local_port;
+    if (cfg.local_ip.empty() || cfg.local_port <= 0) {
+      if (error) *error = "invalid spd_lidar local endpoint";
+      return false;
+    }
+
+    const int listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_fd < 0) {
+      if (error) *error = std::string("server socket failed: ") + std::strerror(errno);
+      return false;
+    }
+    int reuse_addr = 1;
+    ::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(reuse_addr));
+
+    sockaddr_in local_addr{};
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(static_cast<uint16_t>(cfg.local_port));
+    if (::inet_pton(AF_INET, cfg.local_ip.c_str(), &local_addr.sin_addr) != 1) {
+      if (error) *error = "invalid local ip: " + cfg.local_ip;
+      ::close(listen_fd);
+      return false;
+    }
+    if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&local_addr), sizeof(local_addr)) != 0) {
+      if (errno == EADDRNOTAVAIL) {
+        sockaddr_in any_addr{};
+        any_addr.sin_family = AF_INET;
+        any_addr.sin_port = htons(static_cast<uint16_t>(cfg.local_port));
+        any_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&any_addr), sizeof(any_addr)) != 0) {
+          if (error) {
+            *error = "bind failed on " + cfg.local_ip + ":" + std::to_string(cfg.local_port) +
+                     ", fallback 0.0.0.0 failed: " + std::strerror(errno);
+          }
+          ::close(listen_fd);
+          return false;
+        }
+        std::cout << "[spd_lidar] warning: local_ip " << cfg.local_ip
+                  << " not present on host, fallback bind 0.0.0.0:" << cfg.local_port << "\n";
+      } else {
+        if (error) *error = std::string("bind failed: ") + std::strerror(errno);
+        ::close(listen_fd);
+        return false;
+      }
+    }
+    if (::listen(listen_fd, 1) != 0) {
+      if (error) *error = std::string("listen failed: ") + std::strerror(errno);
+      ::close(listen_fd);
+      return false;
+    }
+
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(listen_fd, &read_fds);
+    timeval accept_tv{};
+    accept_tv.tv_sec = 1;
+    accept_tv.tv_usec = 0;
+    const int ready = ::select(listen_fd + 1, &read_fds, nullptr, nullptr, &accept_tv);
+    if (ready <= 0) {
+      if (error) {
+        *error = (ready == 0) ? "accept timeout"
+                              : std::string("select failed: ") + std::strerror(errno);
+      }
+      ::close(listen_fd);
+      return false;
+    }
+
+    sockaddr_in peer_addr{};
+    socklen_t peer_len = sizeof(peer_addr);
+    const int conn_fd = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
+    ::close(listen_fd);
+    if (conn_fd < 0) {
+      if (error) *error = std::string("accept failed: ") + std::strerror(errno);
+      return false;
+    }
+
+    const bool ok = exchange_on_connected_fd(conn_fd);
+    ::close(conn_fd);
+    return ok;
   }
-  if (ip.empty() || port <= 0) {
-    if (error) *error = "invalid spd_lidar endpoint";
+
+  if (cfg.device_ip.empty() || cfg.device_port <= 0) {
+    if (error) *error = "invalid spd_lidar device endpoint";
     return false;
   }
 
@@ -75,17 +181,11 @@ bool spdLidarExchangeTcp(const ai_safety_controller::Interface::SpdLidarInstance
     return false;
   }
 
-  timeval tv{};
-  tv.tv_sec = 1;
-  tv.tv_usec = 0;
-  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(static_cast<uint16_t>(port));
-  if (::inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
-    if (error) *error = "invalid ip: " + ip;
+  addr.sin_port = htons(static_cast<uint16_t>(cfg.device_port));
+  if (::inet_pton(AF_INET, cfg.device_ip.c_str(), &addr.sin_addr) != 1) {
+    if (error) *error = "invalid ip: " + cfg.device_ip;
     ::close(fd);
     return false;
   }
@@ -95,23 +195,9 @@ bool spdLidarExchangeTcp(const ai_safety_controller::Interface::SpdLidarInstance
     return false;
   }
 
-  const ssize_t sent = ::send(fd, request.data(), request.size(), 0);
-  if (sent < 0 || static_cast<size_t>(sent) != request.size()) {
-    if (error) *error = std::string("send failed: ") + std::strerror(errno);
-    ::close(fd);
-    return false;
-  }
-
-  uint8_t buf[256];
-  const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
-  if (n <= 0) {
-    if (error) *error = std::string("recv failed: ") + std::strerror(errno);
-    ::close(fd);
-    return false;
-  }
-  response->assign(buf, buf + n);
+  const bool ok = exchange_on_connected_fd(fd);
   ::close(fd);
-  return true;
+  return ok;
 }
 
 class FunctionDriverAdapter : public DriverAdapter {
@@ -262,6 +348,11 @@ CraneState Interface::getCraneState() const {
   return latest_crane_state_;
 }
 
+std::unordered_map<std::string, std::uint16_t> Interface::getLatestLidarRawMm() const {
+  std::lock_guard<std::mutex> lock(crane_state_mutex_);
+  return latest_lidar_raw_mm_;
+}
+
 void Interface::setCraneState(const CraneState& data) {
   std::lock_guard<std::mutex> lock(crane_state_mutex_);
   latest_crane_state_ = data;
@@ -275,8 +366,11 @@ void Interface::updateCraneStateFromEncoder(double turns_filtered) {
   setCraneState(crane);
 }
 
-void Interface::updateCraneStateFromLidarMeasurement(const std::string& id, double projected_distance_m) {
+void Interface::updateCraneStateFromLidarMeasurement(const std::string& id,
+                                                     std::uint16_t raw_mm,
+                                                     double projected_distance_m) {
   std::lock_guard<std::mutex> lock(crane_state_mutex_);
+  latest_lidar_raw_mm_[id] = raw_mm;
   latest_lidar_projected_distance_m_[id] = std::max(0.0, projected_distance_m);
   if (latest_lidar_projected_distance_m_.empty()) return;
 
@@ -1237,7 +1331,7 @@ Status Interface::init() {
         constexpr double kPi = 3.14159265358979323846;
         const double angle_rad = cfg.vertical_angle_to_vertical_deg * kPi / 180.0;
         const double projected_m = distance_m * std::cos(angle_rad);
-        updateCraneStateFromLidarMeasurement(id, projected_m);
+        updateCraneStateFromLidarMeasurement(id, frame.data, projected_m);
       }
     });
     spd_lidar::SpdLidarCore* lidar_raw = lidar.get();
@@ -1245,7 +1339,12 @@ Status Interface::init() {
       std::vector<uint8_t> resp;
       std::string err;
       if (!spdLidarExchangeTcp(cfg, req, &resp, &err)) {
-        std::cout << "[spd_lidar:" << id << "] net error: " << err << "\n";
+        if (cfg.mode == "server" && err == "accept timeout") {
+          std::cout << "[spd_lidar:" << id << "] waiting client connection at "
+                    << cfg.local_ip << ":" << cfg.local_port << "\n";
+        } else {
+          std::cout << "[spd_lidar:" << id << "] net error: " << err << "\n";
+        }
         return;
       }
       if (!resp.empty()) {

@@ -75,9 +75,9 @@
         {
           "id": "front",
           "enable": true,
-          "mode": "client",
-          "local_ip": "127.0.0.1",
-          "local_port": 8234,
+          "mode": "server",
+          "local_ip": "192.168.61.3",
+          "local_port": 12345,
           "device_ip": "192.168.61.91",
           "device_port": 8234,
           "role": "front_obstacle",
@@ -85,12 +85,12 @@
         },
         {
           "id": "rear",
-          "enable": false,
-          "mode": "client",
-          "local_ip": "127.0.0.1",
-          "local_port": 8235,
+          "enable": true,
+          "mode": "server",
+          "local_ip": "192.168.61.3",
+          "local_port": 12345,
           "device_ip": "192.168.61.92",
-          "device_port": 8235,
+          "device_port": 20108,
           "role": "rear_obstacle",
           "vertical_angle_to_vertical_deg": 0.0
         }

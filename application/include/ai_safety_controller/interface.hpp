@@ -145,6 +145,7 @@ class Interface {
   void setDeviceStatus(const DeviceStatus& data);
   DeviceStatus getDeviceStatus() const;
   CraneState getCraneState() const;
+  std::unordered_map<std::string, std::uint16_t> getLatestLidarRawMm() const;
   AlertMessage getAlertMessage() const;
   std::uint8_t getBatteryButtonSignals() const;
 
@@ -202,7 +203,9 @@ class Interface {
   void updateHookStateFromDriver();
   void setCraneState(const CraneState& data);
   void updateCraneStateFromEncoder(double turns_filtered);
-  void updateCraneStateFromLidarMeasurement(const std::string& id, double projected_distance_m);
+  void updateCraneStateFromLidarMeasurement(const std::string& id,
+                                            std::uint16_t raw_mm,
+                                            double projected_distance_m);
 
 #ifdef ASC_ENABLE_BATTERY
   Status queryBattery(const std::vector<std::string>& args);
@@ -253,6 +256,7 @@ class Interface {
   AlertMessage latest_alert_message_;
   std::uint8_t latest_battery_button_signals_ = 0;
   std::unordered_map<std::string, double> latest_lidar_projected_distance_m_;
+  std::unordered_map<std::string, std::uint16_t> latest_lidar_raw_mm_;
   mutable std::mutex snapshot_mutex_;
   mutable std::mutex device_status_mutex_;
   mutable std::mutex crane_state_mutex_;
