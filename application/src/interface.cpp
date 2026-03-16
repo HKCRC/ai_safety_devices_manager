@@ -518,6 +518,21 @@ void Interface::applyBatteryDefaultsFromJson(const std::string& json_text) {
   if (extractIntValue(body, "battery_slave_id", &battery_slave_id)) battery_defaults_.battery_slave_id = battery_slave_id;
   double query_hz = 0.0;
   if (extractDoubleValue(body, "query_hz", &query_hz)) battery_defaults_.query_hz = query_hz;
+  const std::string retry_body = extractObjectBody(body, "retry");
+  if (!retry_body.empty()) {
+    int max_retries = 0;
+    if (extractIntValue(retry_body, "max_retries", &max_retries))
+      battery_defaults_.retry_policy.max_retries = std::max(0, max_retries);
+    int base_backoff_ms = 0;
+    if (extractIntValue(retry_body, "base_backoff_ms", &base_backoff_ms))
+      battery_defaults_.retry_policy.base_backoff_ms = std::max(0, base_backoff_ms);
+    int max_backoff_ms = 0;
+    if (extractIntValue(retry_body, "max_backoff_ms", &max_backoff_ms))
+      battery_defaults_.retry_policy.max_backoff_ms = std::max(0, max_backoff_ms);
+    int jitter_ms = 0;
+    if (extractIntValue(retry_body, "jitter_ms", &jitter_ms))
+      battery_defaults_.retry_policy.jitter_ms = std::max(0, jitter_ms);
+  }
 }
 
 void Interface::applySolarDefaultsFromJson(const std::string& json_text) {
@@ -538,6 +553,21 @@ void Interface::applySolarDefaultsFromJson(const std::string& json_text) {
   if (extractIntValue(body, "solar_slave_id", &solar_slave_id)) solar_defaults_.solar_slave_id = solar_slave_id;
   double query_hz = 0.0;
   if (extractDoubleValue(body, "query_hz", &query_hz)) solar_defaults_.query_hz = query_hz;
+  const std::string retry_body = extractObjectBody(body, "retry");
+  if (!retry_body.empty()) {
+    int max_retries = 0;
+    if (extractIntValue(retry_body, "max_retries", &max_retries))
+      solar_defaults_.retry_policy.max_retries = std::max(0, max_retries);
+    int base_backoff_ms = 0;
+    if (extractIntValue(retry_body, "base_backoff_ms", &base_backoff_ms))
+      solar_defaults_.retry_policy.base_backoff_ms = std::max(0, base_backoff_ms);
+    int max_backoff_ms = 0;
+    if (extractIntValue(retry_body, "max_backoff_ms", &max_backoff_ms))
+      solar_defaults_.retry_policy.max_backoff_ms = std::max(0, max_backoff_ms);
+    int jitter_ms = 0;
+    if (extractIntValue(retry_body, "jitter_ms", &jitter_ms))
+      solar_defaults_.retry_policy.jitter_ms = std::max(0, jitter_ms);
+  }
 }
 
 void Interface::applyIoRelayDefaultsFromJson(const std::string& json_text) {
@@ -569,6 +599,21 @@ void Interface::applyIoRelayDefaultsFromJson(const std::string& json_text) {
   }
   double query_hz = 0.0;
   if (extractDoubleValue(body, "query_hz", &query_hz)) io_relay_defaults_.query_hz = query_hz;
+  const std::string retry_body = extractObjectBody(body, "retry");
+  if (!retry_body.empty()) {
+    int max_retries = 0;
+    if (extractIntValue(retry_body, "max_retries", &max_retries))
+      io_relay_defaults_.retry_policy.max_retries = std::max(0, max_retries);
+    int base_backoff_ms = 0;
+    if (extractIntValue(retry_body, "base_backoff_ms", &base_backoff_ms))
+      io_relay_defaults_.retry_policy.base_backoff_ms = std::max(0, base_backoff_ms);
+    int max_backoff_ms = 0;
+    if (extractIntValue(retry_body, "max_backoff_ms", &max_backoff_ms))
+      io_relay_defaults_.retry_policy.max_backoff_ms = std::max(0, max_backoff_ms);
+    int jitter_ms = 0;
+    if (extractIntValue(retry_body, "jitter_ms", &jitter_ms))
+      io_relay_defaults_.retry_policy.jitter_ms = std::max(0, jitter_ms);
+  }
 }
 
 void Interface::applyHoistHookDefaultsFromJson(const std::string& json_text) {
@@ -617,6 +662,21 @@ void Interface::applyHoistHookDefaultsFromJson(const std::string& json_text) {
   if (extractIntValue(body, "both_speaker_switch_interval_ms", &both_speaker_switch_interval_ms) &&
       both_speaker_switch_interval_ms > 0) {
     hoist_hook_defaults_.both_speaker_play_window_ms = both_speaker_switch_interval_ms;
+  }
+  const std::string retry_body = extractObjectBody(body, "retry");
+  if (!retry_body.empty()) {
+    int max_retries = 0;
+    if (extractIntValue(retry_body, "max_retries", &max_retries))
+      hoist_hook_defaults_.retry_policy.max_retries = std::max(0, max_retries);
+    int base_backoff_ms = 0;
+    if (extractIntValue(retry_body, "base_backoff_ms", &base_backoff_ms))
+      hoist_hook_defaults_.retry_policy.base_backoff_ms = std::max(0, base_backoff_ms);
+    int max_backoff_ms = 0;
+    if (extractIntValue(retry_body, "max_backoff_ms", &max_backoff_ms))
+      hoist_hook_defaults_.retry_policy.max_backoff_ms = std::max(0, max_backoff_ms);
+    int jitter_ms = 0;
+    if (extractIntValue(retry_body, "jitter_ms", &jitter_ms))
+      hoist_hook_defaults_.retry_policy.jitter_ms = std::max(0, jitter_ms);
   }
 }
 
@@ -1241,7 +1301,12 @@ Status Interface::init() {
         battery_defaults_.module_ip,
         static_cast<uint16_t>(battery_defaults_.module_port),
         static_cast<uint8_t>(battery_defaults_.module_slave_id),
-        static_cast<uint8_t>(battery_defaults_.battery_slave_id));
+        static_cast<uint8_t>(battery_defaults_.battery_slave_id),
+        battery::BatteryCore::RetryPolicy{
+            battery_defaults_.retry_policy.max_retries,
+            battery_defaults_.retry_policy.base_backoff_ms,
+            battery_defaults_.retry_policy.max_backoff_ms,
+            battery_defaults_.retry_policy.jitter_ms});
   }
 #endif
 #ifdef ASC_ENABLE_HOIST_HOOK
@@ -1254,13 +1319,23 @@ Status Interface::init() {
           hoist_hook_defaults_.data_bit,
           hoist_hook_defaults_.stop_bit,
           static_cast<uint8_t>(hoist_hook_defaults_.hook_slave_id),
-          static_cast<uint8_t>(hoist_hook_defaults_.power_slave_id));
+          static_cast<uint8_t>(hoist_hook_defaults_.power_slave_id),
+          hoist_hook::HoistHookCore::RetryPolicy{
+              hoist_hook_defaults_.retry_policy.max_retries,
+              hoist_hook_defaults_.retry_policy.base_backoff_ms,
+              hoist_hook_defaults_.retry_policy.max_backoff_ms,
+              hoist_hook_defaults_.retry_policy.jitter_ms});
     } else {
       hoist_hook_ = std::make_unique<hoist_hook::HoistHookCore>(
           hoist_hook_defaults_.module_ip,
           static_cast<uint16_t>(hoist_hook_defaults_.module_port),
           static_cast<uint8_t>(hoist_hook_defaults_.hook_slave_id),
-          static_cast<uint8_t>(hoist_hook_defaults_.power_slave_id));
+          static_cast<uint8_t>(hoist_hook_defaults_.power_slave_id),
+          hoist_hook::HoistHookCore::RetryPolicy{
+              hoist_hook_defaults_.retry_policy.max_retries,
+              hoist_hook_defaults_.retry_policy.base_backoff_ms,
+              hoist_hook_defaults_.retry_policy.max_backoff_ms,
+              hoist_hook_defaults_.retry_policy.jitter_ms});
     }
   }
 #endif
@@ -1269,7 +1344,12 @@ Status Interface::init() {
     io_relay_ = std::make_unique<io_relay::IoRelayCore>(
         io_relay_defaults_.module_ip,
         static_cast<uint16_t>(io_relay_defaults_.module_port),
-        static_cast<uint8_t>(io_relay_defaults_.module_slave_id));
+        static_cast<uint8_t>(io_relay_defaults_.module_slave_id),
+        io_relay::IoRelayCore::RetryPolicy{
+            io_relay_defaults_.retry_policy.max_retries,
+            io_relay_defaults_.retry_policy.base_backoff_ms,
+            io_relay_defaults_.retry_policy.max_backoff_ms,
+            io_relay_defaults_.retry_policy.jitter_ms});
     if (io_relay_defaults_.battery_button_relay_channels.empty()) {
       std::cout << "[io_relay] battery_button_relay_channels is empty, "
                    "battery button control is disabled\n";
@@ -1305,7 +1385,12 @@ Status Interface::init() {
         solar_defaults_.module_ip,
         static_cast<uint16_t>(solar_defaults_.module_port),
         static_cast<uint8_t>(solar_defaults_.module_slave_id),
-        static_cast<uint8_t>(solar_defaults_.solar_slave_id));
+        static_cast<uint8_t>(solar_defaults_.solar_slave_id),
+        solar::SolarCore::RetryPolicy{
+            solar_defaults_.retry_policy.max_retries,
+            solar_defaults_.retry_policy.base_backoff_ms,
+            solar_defaults_.retry_policy.max_backoff_ms,
+            solar_defaults_.retry_policy.jitter_ms});
   }
 #endif
 #ifdef ASC_ENABLE_SPD_LIDAR

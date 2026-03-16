@@ -10,6 +10,12 @@ namespace hoist_hook {
 class HoistHookCore {
  public:
   enum class Transport { TCP, RTU };
+  struct RetryPolicy {
+    int max_retries = 2;
+    int base_backoff_ms = 100;
+    int max_backoff_ms = 500;
+    int jitter_ms = 50;
+  };
 
   HoistHookCore();
   /** Modbus TCP: connect to module_ip:module_port, unit_id = hook_slave_id / power_slave_id */
@@ -17,6 +23,11 @@ class HoistHookCore {
                 uint16_t module_port,
                 uint8_t hook_slave_id,
                 uint8_t power_slave_id);
+  HoistHookCore(const std::string& module_ip,
+                uint16_t module_port,
+                uint8_t hook_slave_id,
+                uint8_t power_slave_id,
+                const RetryPolicy& retry_policy);
   /** Modbus RTU over serial: device (e.g. /dev/ttyUSB0), 9600 8N1, hook/power slave ids */
   HoistHookCore(const std::string& device,
                 int baud,
@@ -25,6 +36,14 @@ class HoistHookCore {
                 int stop_bit,
                 uint8_t hook_slave_id,
                 uint8_t power_slave_id);
+  HoistHookCore(const std::string& device,
+                int baud,
+                char parity,
+                int data_bit,
+                int stop_bit,
+                uint8_t hook_slave_id,
+                uint8_t power_slave_id,
+                const RetryPolicy& retry_policy);
   ~HoistHookCore();
 
   void printRegisterGroups() const;
@@ -110,6 +129,7 @@ class HoistHookCore {
   uint16_t transaction_id_;
   int socket_fd_;
   int serial_fd_;
+  RetryPolicy retry_policy_;
   bool print_enabled_;
   std::mutex socket_mutex_;
   std::vector<RegisterGroup> register_groups_;

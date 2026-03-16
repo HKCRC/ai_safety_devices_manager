@@ -6,12 +6,16 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <random>
 #include <sstream>
+#include <thread>
 
 namespace battery {
 
@@ -19,6 +23,23 @@ namespace {
 
 uint16_t readBe16(const uint8_t* p) {
   return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | p[1]);
+}
+
+int computeRetryDelayMs(const BatteryCore::RetryPolicy& policy, int retry_index) {
+  if (retry_index <= 0) return 0;
+  const int base = std::max(0, policy.base_backoff_ms);
+  const int cap = std::max(base, policy.max_backoff_ms);
+  int delay = base;
+  for (int i = 1; i < retry_index && delay < cap; ++i) {
+    delay = std::min(cap, delay * 2);
+  }
+  const int jitter = std::max(0, policy.jitter_ms);
+  if (jitter > 0) {
+    thread_local std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> dist(0, jitter);
+    delay += dist(rng);
+  }
+  return delay;
 }
 
 }  // namespace
@@ -29,12 +50,20 @@ BatteryCore::BatteryCore(const std::string& module_ip,
                          uint16_t module_port,
                          uint8_t module_slave_id,
                          uint8_t battery_slave_id)
+    : BatteryCore(module_ip, module_port, module_slave_id, battery_slave_id, RetryPolicy()) {}
+
+BatteryCore::BatteryCore(const std::string& module_ip,
+                         uint16_t module_port,
+                         uint8_t module_slave_id,
+                         uint8_t battery_slave_id,
+                         const RetryPolicy& retry_policy)
     : module_ip_(module_ip),
       module_port_(module_port),
       module_slave_id_(module_slave_id),
       battery_slave_id_(battery_slave_id),
       transaction_id_(0x31A6),
       socket_fd_(-1),
+      retry_policy_(retry_policy),
       register_groups_({
           {0x0000, 0x000F, "读/写混合", "基础状态（SOC、电流电压、MOS、均衡位）"},
           {0x0010, 0x004F, "只读", "第1~64节电芯电压"},
@@ -148,7 +177,7 @@ std::vector<uint8_t> BatteryCore::createModbusPacket(uint8_t function_code,
     transaction_id_ = static_cast<uint16_t>((transaction_id_ + 1) & 0xFFFF);
   }
   if (!(function_code == 0x03 || function_code == 0x04 || function_code == 0x06)) {
-    std::cout << "❌ 不支持的功能码\n";
+    std::cout << "[battery] ❌ 不支持的功能码\n";
     return {};
   }
 
@@ -182,17 +211,28 @@ bool BatteryCore::sendModbusPacket(const std::vector<uint8_t>& packet,
   const std::string endpoint_key = module_ip_ + ":" + std::to_string(module_port_);
   ai_safety_controller::common::GatewaySerialGuard serial_guard(endpoint_key, 120);
   std::lock_guard<std::mutex> lock(socket_mutex_);
-  if (!ensureConnectionLocked(timeout_sec)) return false;
-  if (sendAndReceiveLocked(packet, response, context)) {
+  const int max_retries = std::max(0, retry_policy_.max_retries);
+  for (int attempt = 0; attempt <= max_retries; ++attempt) {
+    if (attempt > 0) {
+      const int delay_ms = computeRetryDelayMs(retry_policy_, attempt);
+      if (delay_ms > 0) {
+        std::cout << "[battery] ⚠️ 第" << attempt << "/" << max_retries
+                  << "次重试，退避" << delay_ms << "ms: " << context << "\n";
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+      }
+    }
+    if (!ensureConnectionLocked(timeout_sec)) {
+      disconnectLocked();
+      continue;
+    }
+    if (sendAndReceiveLocked(packet, response, context)) {
+      disconnectLocked();
+      return true;
+    }
     disconnectLocked();
-    return true;
   }
-  // Retry once after reconnect for transient disconnects.
-  disconnectLocked();
-  if (!ensureConnectionLocked(timeout_sec)) return false;
-  const bool ok = sendAndReceiveLocked(packet, response, context);
-  disconnectLocked();
-  return ok;
+  std::cout << "[battery] ❌ 重试耗尽，操作失败: " << context << "\n";
+  return false;
 }
 
 bool BatteryCore::ensureConnectionLocked(double timeout_sec) {
@@ -200,7 +240,7 @@ bool BatteryCore::ensureConnectionLocked(double timeout_sec) {
 
   socket_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
   if (socket_fd_ < 0) {
-    std::cout << "❌ socket 创建失败: " << std::strerror(errno) << "\n";
+    std::cout << "[battery] ❌ socket 创建失败: " << std::strerror(errno) << "\n";
     return false;
   }
 
@@ -214,13 +254,13 @@ bool BatteryCore::ensureConnectionLocked(double timeout_sec) {
   addr.sin_family = AF_INET;
   addr.sin_port = htons(module_port_);
   if (::inet_pton(AF_INET, module_ip_.c_str(), &addr.sin_addr) != 1) {
-    std::cout << "❌ 模块IP无效: " << module_ip_ << "\n";
+    std::cout << "[battery] ❌ 模块IP无效: " << module_ip_ << "\n";
     disconnectLocked();
     return false;
   }
 
   if (::connect(socket_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    std::cout << "❌ 连接失败: " << std::strerror(errno) << "\n";
+    std::cout << "[battery] ❌ 连接失败: " << std::strerror(errno) << "\n";
     disconnectLocked();
     return false;
   }
@@ -238,13 +278,13 @@ bool BatteryCore::sendAndReceiveLocked(const std::vector<uint8_t>& packet,
                                        std::vector<uint8_t>* response,
                                        const std::string& context) {
   if (::send(socket_fd_, packet.data(), packet.size(), 0) < 0) {
-    std::cout << "❌ 发送失败: " << std::strerror(errno) << "\n";
+    std::cout << "[battery] ❌ 发送失败: " << std::strerror(errno) << "\n";
     return false;
   }
   uint8_t buf[1024];
   const ssize_t n = ::recv(socket_fd_, buf, sizeof(buf), 0);
   if (n <= 0) {
-    std::cout << "❌ 无响应: " << context << "\n";
+    std::cout << "[battery] ❌ 无响应: " << context << "\n";
     return false;
   }
   response->assign(buf, buf + n);
@@ -275,7 +315,7 @@ bool BatteryCore::parseRegisterResponse(const std::vector<uint8_t>& response,
   if (!values) return false;
   values->clear();
   if (response.size() < 9) {
-    std::cout << "❌ 响应报文过短\n";
+    std::cout << "[battery] ❌ 响应报文过短\n";
     return false;
   }
   const uint8_t recv_fc = response[7];
@@ -288,12 +328,12 @@ bool BatteryCore::parseRegisterResponse(const std::vector<uint8_t>& response,
   const uint8_t data_len = response[8];
   const size_t expected_len = 9 + data_len;
   if (response.size() != expected_len) {
-    std::cout << "❌ 响应长度异常，预期" << expected_len << "字节，实际" << response.size()
+    std::cout << "[battery] ❌ 响应长度异常，预期" << expected_len << "字节，实际" << response.size()
               << "字节\n";
     return false;
   }
   if (data_len < quantity * 2) {
-    std::cout << "❌ 数据长度不足，无法解析" << quantity << "个寄存器\n";
+    std::cout << "[battery] ❌ 数据长度不足，无法解析" << quantity << "个寄存器\n";
     return false;
   }
   for (uint16_t i = 0; i < quantity; ++i) {
@@ -338,7 +378,7 @@ void BatteryCore::printRegisterGroups() const {
 bool BatteryCore::confirmRiskyWrite(uint16_t addr) const {
   const bool risky = (addr >= 0x0FA1 && addr <= 0x0FB4) || (addr >= 0x5A60 && addr <= 0x5A8E);
   if (!risky) return true;
-  std::cout << "⚠️  检测到高风险写入地址，可能导致设备参数变化。请输入 YES 确认继续写入：";
+  std::cout << "[battery] ⚠️  检测到高风险写入地址，可能导致设备参数变化。请输入 YES 确认继续写入：";
   std::string input;
   std::getline(std::cin, input);
   return input == "YES";
@@ -346,7 +386,7 @@ bool BatteryCore::confirmRiskyWrite(uint16_t addr) const {
 
 void BatteryCore::genericRead(uint16_t address, uint16_t quantity, int function_code) {
   if (quantity < 1 || quantity > 125) {
-    std::cout << "❌ 数量超限，读寄存器数量需在1~125\n";
+    std::cout << "[battery] ❌ 数量超限，读寄存器数量需在1~125\n";
     return;
   }
   int fc = (function_code < 0) ? 0x03 : function_code;
@@ -379,7 +419,7 @@ void BatteryCore::genericWrite(uint16_t address, uint16_t value, int function_co
     return;
   }
   if (!confirmRiskyWrite(address)) {
-    std::cout << "ℹ️ 已取消写入\n";
+    std::cout << "[battery] ℹ️ 已取消写入\n";
     return;
   }
   bool ok = false;
@@ -392,7 +432,7 @@ void BatteryCore::genericWrite(uint16_t address, uint16_t value, int function_co
     std::cout << "✅ 电池写入成功：0x" << std::hex << std::uppercase << std::setw(4)
               << std::setfill('0') << address << std::dec << " <= " << value << "\n";
   } else {
-    std::cout << "⚠️ 写入响应异常\n";
+    std::cout << "[battery] ⚠️ 写入响应异常\n";
   }
 }
 
@@ -463,7 +503,7 @@ void BatteryCore::queryBatteryInfo(const std::string& info_type) {
       if (values[i] > max_v) max_v = values[i];
       if (values[i] < min_v) min_v = values[i];
     }
-    std::cout << "✅ 16节电芯电压：\n";
+    std::cout << "[battery] ✅ 16节电芯电压：\n";
     std::cout << "  最高: " << max_v << "mV, 最低: " << min_v << "mV, 压差: " << (max_v - min_v)
               << "mV\n";
     for (size_t i = 0; i < values.size(); ++i) {
@@ -474,7 +514,7 @@ void BatteryCore::queryBatteryInfo(const std::string& info_type) {
     if (!sendBatteryRead(0x03, 0x0050, 2, battery_slave_id_, &response)) return;
     std::vector<uint16_t> values;
     if (!parseRegisterResponse(response, 0x03, 2, &values)) return;
-    std::cout << "✅ 温度信息：\n";
+    std::cout << "[battery] ✅ 温度信息：\n";
     std::cout << "  第1路NTC温度: " << std::fixed << std::setprecision(1) << toSigned16(values[0]) * 0.1
               << "℃\n";
     std::cout << "  第2路NTC温度: " << std::fixed << std::setprecision(1) << toSigned16(values[1]) * 0.1
@@ -482,7 +522,7 @@ void BatteryCore::queryBatteryInfo(const std::string& info_type) {
   } else if (info_type == "mos") {
     std::vector<uint8_t> c_resp;
     std::vector<uint8_t> d_resp;
-    std::cout << "✅ MOS管状态：\n";
+    std::cout << "[battery] ✅ MOS管状态：\n";
     if (sendBatteryRead(0x03, 0x000A, 1, battery_slave_id_, &c_resp)) {
       std::vector<uint16_t> values;
       if (parseRegisterResponse(c_resp, 0x03, 1, &values)) {
@@ -511,9 +551,9 @@ void BatteryCore::queryBatteryInfo(const std::string& info_type) {
       if ((v >> it->first) & 0x1) active.push_back(it->second);
     }
     if (active.empty()) {
-      std::cout << "✅ 无保护状态，电池正常\n";
+      std::cout << "[battery] ✅ 无保护状态，电池正常\n";
     } else {
-      std::cout << "⚠️ 存在保护/告警: ";
+      std::cout << "[battery] ⚠️ 存在保护/告警: ";
       for (size_t i = 0; i < active.size(); ++i) {
         if (i > 0) std::cout << ", ";
         std::cout << active[i];
@@ -527,13 +567,13 @@ void BatteryCore::queryBatteryInfo(const std::string& info_type) {
     queryBatteryInfo("mos");
     queryBatteryInfo("protect");
   } else {
-    std::cout << "❌ 未知 info_type: " << info_type << "\n";
+    std::cout << "[battery] ❌ 未知 info_type: " << info_type << "\n";
   }
 }
 
 void BatteryCore::scanBatterySlaveIds(int start_id, int end_id) {
   if (start_id < 1 || end_id > 252 || start_id > end_id) {
-    std::cout << "❌ 参数错误，示例：scan 或 scan 1 16\n";
+    std::cout << "[battery] ❌ 参数错误，示例：scan 或 scan 1 16\n";
     return;
   }
   std::cout << "\n🔎 扫描电池站号: " << start_id << "~" << end_id << "\n";
@@ -562,7 +602,7 @@ void BatteryCore::scanBatterySlaveIds(int start_id, int end_id) {
 
 void BatteryCore::setBatteryAddr(int new_addr) {
   if (new_addr < 1 || new_addr > 252) {
-    std::cout << "❌ 地址无效，需在1-252之间\n";
+    std::cout << "[battery] ❌ 地址无效，需在1-252之间\n";
     return;
   }
   bool ok = false;
@@ -575,7 +615,7 @@ void BatteryCore::setBatteryAddr(int new_addr) {
     battery_slave_id_ = static_cast<uint8_t>(new_addr);
     std::cout << "✅ 电池从站地址已修改为" << new_addr << "，重启电池生效\n";
   } else {
-    std::cout << "⚠️ 地址修改响应异常\n";
+    std::cout << "[battery] ⚠️ 地址修改响应异常\n";
   }
 }
 

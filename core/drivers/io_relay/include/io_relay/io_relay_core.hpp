@@ -9,8 +9,21 @@ namespace io_relay {
 
 class IoRelayCore {
  public:
+  struct RetryPolicy {
+    int max_retries = 2;
+    int base_backoff_ms = 100;
+    int max_backoff_ms = 500;
+    int jitter_ms = 50;
+  };
+
   IoRelayCore();
-  IoRelayCore(const std::string& module_ip, uint16_t module_port, uint8_t module_slave_id);
+  IoRelayCore(const std::string& module_ip,
+              uint16_t module_port,
+              uint8_t module_slave_id);
+  IoRelayCore(const std::string& module_ip,
+              uint16_t module_port,
+              uint8_t module_slave_id,
+              const RetryPolicy& retry_policy);
   ~IoRelayCore();
 
   void controlRelay(int relay_num, const std::string& status);
@@ -39,6 +52,7 @@ class IoRelayCore {
   const uint8_t module_slave_id_;
   uint16_t transaction_id_;
   int socket_fd_;
+  RetryPolicy retry_policy_;
   std::mutex socket_mutex_;
 };
 

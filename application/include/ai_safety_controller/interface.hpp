@@ -52,6 +52,13 @@ class DriverAdapter {
 
 class Interface {
  public:
+  struct RetryPolicy {
+    int max_retries = 2;
+    int base_backoff_ms = 100;
+    int max_backoff_ms = 500;
+    int jitter_ms = 50;
+  };
+
   struct BatteryDefaults {
     bool enable = true;
     std::string module_ip = "192.168.1.12";
@@ -59,6 +66,7 @@ class Interface {
     int module_slave_id = 3;
     int battery_slave_id = 2;
     double query_hz = 0.0;
+    RetryPolicy retry_policy{};
   };
 
   struct SolarDefaults {
@@ -68,6 +76,7 @@ class Interface {
     int module_slave_id = 3;
     int solar_slave_id = 4;
     double query_hz = 0.0;
+    RetryPolicy retry_policy{};
   };
 
   struct IoRelayDefaults {
@@ -77,6 +86,7 @@ class Interface {
     int module_slave_id = 3;
     std::vector<int> battery_button_relay_channels{};
     double query_hz = 0.0;
+    RetryPolicy retry_policy{};
   };
 
   struct HoistHookDefaults {
@@ -94,6 +104,7 @@ class Interface {
     double query_hz = 0.0;
     int both_speaker_play_window_ms = 5000;
     int both_speaker_switch_gap_ms = 200;
+    RetryPolicy retry_policy{};
   };
 
   struct EncoderDefaults {

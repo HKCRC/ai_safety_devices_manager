@@ -9,6 +9,13 @@ namespace solar {
 
 class SolarCore {
  public:
+  struct RetryPolicy {
+    int max_retries = 2;
+    int base_backoff_ms = 100;
+    int max_backoff_ms = 500;
+    int jitter_ms = 50;
+  };
+
   struct ChargeStatusSample {
     bool ok = false;
     uint16_t charge_status_word = 0;
@@ -20,6 +27,11 @@ class SolarCore {
             uint16_t module_port,
             uint8_t module_slave_id,
             uint8_t solar_slave_id);
+  SolarCore(const std::string& module_ip,
+            uint16_t module_port,
+            uint8_t module_slave_id,
+            uint8_t solar_slave_id,
+            const RetryPolicy& retry_policy);
   ~SolarCore();
 
   void printRegisterGroups() const;
@@ -78,6 +90,7 @@ class SolarCore {
   uint8_t solar_slave_id_;
   uint16_t transaction_id_;
   int socket_fd_;
+  RetryPolicy retry_policy_;
   std::mutex socket_mutex_;
   std::vector<RegisterGroup> register_groups_;
 };

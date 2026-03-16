@@ -6,12 +6,16 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <random>
 #include <sstream>
+#include <thread>
 
 namespace solar {
 
@@ -19,6 +23,23 @@ namespace {
 
 uint16_t readBe16(const uint8_t* p) {
   return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | p[1]);
+}
+
+int computeRetryDelayMs(const SolarCore::RetryPolicy& policy, int retry_index) {
+  if (retry_index <= 0) return 0;
+  const int base = std::max(0, policy.base_backoff_ms);
+  const int cap = std::max(base, policy.max_backoff_ms);
+  int delay = base;
+  for (int i = 1; i < retry_index && delay < cap; ++i) {
+    delay = std::min(cap, delay * 2);
+  }
+  const int jitter = std::max(0, policy.jitter_ms);
+  if (jitter > 0) {
+    thread_local std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> dist(0, jitter);
+    delay += dist(rng);
+  }
+  return delay;
 }
 
 }  // namespace
@@ -29,12 +50,20 @@ SolarCore::SolarCore(const std::string& module_ip,
                      uint16_t module_port,
                      uint8_t module_slave_id,
                      uint8_t solar_slave_id)
+    : SolarCore(module_ip, module_port, module_slave_id, solar_slave_id, RetryPolicy()) {}
+
+SolarCore::SolarCore(const std::string& module_ip,
+                     uint16_t module_port,
+                     uint8_t module_slave_id,
+                     uint8_t solar_slave_id,
+                     const RetryPolicy& retry_policy)
     : module_ip_(module_ip),
       module_port_(module_port),
       module_slave_id_(module_slave_id),
       solar_slave_id_(solar_slave_id),
       transaction_id_(0x31A6),
       socket_fd_(-1),
+      retry_policy_(retry_policy),
       register_groups_({
           {0x2000, 0x200C, "只读", "开关量状态（超温、昼夜）"},
           {0x3000, 0x3010, "只读", "额定参数（阵列/电池/负载额定值）"},
@@ -95,7 +124,7 @@ std::vector<uint8_t> SolarCore::createModbusPacket(uint8_t function_code,
   }
   if (!(function_code == 0x03 || function_code == 0x04 || function_code == 0x05 ||
         function_code == 0x06)) {
-    std::cout << "❌ 不支持的功能码\n";
+    std::cout << "[solar] ❌ 不支持的功能码\n";
     return {};
   }
 
@@ -129,16 +158,28 @@ bool SolarCore::sendModbusPacket(const std::vector<uint8_t>& packet,
   const std::string endpoint_key = module_ip_ + ":" + std::to_string(module_port_);
   ai_safety_controller::common::GatewaySerialGuard serial_guard(endpoint_key, 120);
   std::lock_guard<std::mutex> lock(socket_mutex_);
-  if (!ensureConnectionLocked(timeout_sec)) return false;
-  if (sendAndReceiveLocked(packet, response, context)) {
+  const int max_retries = std::max(0, retry_policy_.max_retries);
+  for (int attempt = 0; attempt <= max_retries; ++attempt) {
+    if (attempt > 0) {
+      const int delay_ms = computeRetryDelayMs(retry_policy_, attempt);
+      if (delay_ms > 0) {
+        std::cout << "[solar] ⚠️ 第" << attempt << "/" << max_retries
+                  << "次重试，退避" << delay_ms << "ms: " << context << "\n";
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+      }
+    }
+    if (!ensureConnectionLocked(timeout_sec)) {
+      disconnectLocked();
+      continue;
+    }
+    if (sendAndReceiveLocked(packet, response, context)) {
+      disconnectLocked();
+      return true;
+    }
     disconnectLocked();
-    return true;
   }
-  disconnectLocked();
-  if (!ensureConnectionLocked(timeout_sec)) return false;
-  const bool ok = sendAndReceiveLocked(packet, response, context);
-  disconnectLocked();
-  return ok;
+  std::cout << "[solar] ❌ 重试耗尽，操作失败: " << context << "\n";
+  return false;
 }
 
 bool SolarCore::ensureConnectionLocked(double timeout_sec) {
@@ -146,7 +187,7 @@ bool SolarCore::ensureConnectionLocked(double timeout_sec) {
 
   socket_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
   if (socket_fd_ < 0) {
-    std::cout << "❌ socket 创建失败: " << std::strerror(errno) << "\n";
+    std::cout << "[solar] ❌ socket 创建失败: " << std::strerror(errno) << "\n";
     return false;
   }
   timeval tv{};
@@ -159,12 +200,12 @@ bool SolarCore::ensureConnectionLocked(double timeout_sec) {
   addr.sin_family = AF_INET;
   addr.sin_port = htons(module_port_);
   if (::inet_pton(AF_INET, module_ip_.c_str(), &addr.sin_addr) != 1) {
-    std::cout << "❌ 模块IP无效: " << module_ip_ << "\n";
+    std::cout << "[solar] ❌ 模块IP无效: " << module_ip_ << "\n";
     disconnectLocked();
     return false;
   }
   if (::connect(socket_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    std::cout << "❌ 连接失败: " << std::strerror(errno) << "\n";
+    std::cout << "[solar] ❌ 连接失败: " << std::strerror(errno) << "\n";
     disconnectLocked();
     return false;
   }
@@ -182,13 +223,13 @@ bool SolarCore::sendAndReceiveLocked(const std::vector<uint8_t>& packet,
                                      std::vector<uint8_t>* response,
                                      const std::string& context) {
   if (::send(socket_fd_, packet.data(), packet.size(), 0) < 0) {
-    std::cout << "❌ 发送失败: " << std::strerror(errno) << "\n";
+    std::cout << "[solar] ❌ 发送失败: " << std::strerror(errno) << "\n";
     return false;
   }
   uint8_t buf[1024];
   const ssize_t n = ::recv(socket_fd_, buf, sizeof(buf), 0);
   if (n <= 0) {
-    std::cout << "❌ 无响应: " << context << "\n";
+    std::cout << "[solar] ❌ 无响应: " << context << "\n";
     return false;
   }
   response->assign(buf, buf + n);
@@ -219,7 +260,7 @@ bool SolarCore::parseRegisterResponse(const std::vector<uint8_t>& response,
   if (!values) return false;
   values->clear();
   if (response.size() < 9) {
-    std::cout << "❌ 响应报文过短\n";
+    std::cout << "[solar] ❌ 响应报文过短\n";
     return false;
   }
   const uint8_t recv_fc = response[7];
@@ -232,12 +273,12 @@ bool SolarCore::parseRegisterResponse(const std::vector<uint8_t>& response,
   const uint8_t data_len = response[8];
   const size_t expected_len = 9 + data_len;
   if (response.size() != expected_len) {
-    std::cout << "❌ 响应长度异常，预期" << expected_len << "字节，实际" << response.size()
+    std::cout << "[solar] ❌ 响应长度异常，预期" << expected_len << "字节，实际" << response.size()
               << "字节\n";
     return false;
   }
   if (data_len < quantity * 2) {
-    std::cout << "❌ 数据长度不足\n";
+    std::cout << "[solar] ❌ 数据长度不足\n";
     return false;
   }
   for (uint16_t i = 0; i < quantity; ++i) {
@@ -317,7 +358,7 @@ void SolarCore::printRegisterGroups() const {
 bool SolarCore::confirmRiskyWrite(uint16_t addr) const {
   const bool risky = (addr == 0x000D || addr == 0x000E) || (addr >= 0x9000 && addr <= 0x9070);
   if (!risky) return true;
-  std::cout << "⚠️  检测到高风险写入地址，可能导致设备参数变化。请输入 YES 确认继续写入：";
+  std::cout << "[solar] ⚠️  检测到高风险写入地址，可能导致设备参数变化。请输入 YES 确认继续写入：";
   std::string input;
   std::getline(std::cin, input);
   return input == "YES";
@@ -325,7 +366,7 @@ bool SolarCore::confirmRiskyWrite(uint16_t addr) const {
 
 void SolarCore::genericRead(uint16_t address, uint16_t quantity, int function_code) {
   if (quantity < 1 || quantity > 125) {
-    std::cout << "❌ 数量超限，读寄存器数量需在1~125\n";
+    std::cout << "[solar] ❌ 数量超限，读寄存器数量需在1~125\n";
     return;
   }
   int fc = (function_code < 0) ? 0x04 : function_code;
@@ -357,7 +398,7 @@ void SolarCore::genericWrite(uint16_t address, uint16_t value, int function_code
     return;
   }
   if (!confirmRiskyWrite(address)) {
-    std::cout << "ℹ️ 已取消写入\n";
+    std::cout << "[solar] ℹ️ 已取消写入\n";
     return;
   }
   bool ok = false;
@@ -370,7 +411,7 @@ void SolarCore::genericWrite(uint16_t address, uint16_t value, int function_code
     std::cout << "✅ 太阳能写入成功：0x" << std::hex << std::uppercase << std::setw(4)
               << std::setfill('0') << address << std::dec << " <= " << value << "\n";
   } else {
-    std::cout << "⚠️ 写入响应异常\n";
+    std::cout << "[solar] ⚠️ 写入响应异常\n";
   }
 }
 
@@ -464,13 +505,13 @@ void SolarCore::querySolarInfo(const std::string& info_type) {
     querySolarInfo("basic");
     querySolarInfo("status");
   } else {
-    std::cout << "❌ 未知 info_type: " << info_type << "\n";
+    std::cout << "[solar] ❌ 未知 info_type: " << info_type << "\n";
   }
 }
 
 void SolarCore::scanSolarSlaveIds(int start_id, int end_id) {
   if (start_id < 1 || end_id > 252 || start_id > end_id) {
-    std::cout << "❌ 参数错误，示例：scan 或 scan 1 16\n";
+    std::cout << "[solar] ❌ 参数错误，示例：scan 或 scan 1 16\n";
     return;
   }
   std::cout << "\n🔎 扫描太阳能站号: " << start_id << "~" << end_id << "\n";

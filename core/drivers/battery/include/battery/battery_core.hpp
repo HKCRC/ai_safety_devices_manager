@@ -9,6 +9,13 @@ namespace battery {
 
 class BatteryCore {
  public:
+  struct RetryPolicy {
+    int max_retries = 2;
+    int base_backoff_ms = 100;
+    int max_backoff_ms = 500;
+    int jitter_ms = 50;
+  };
+
   struct Summary {
     bool ok = false;
     float soc_percent = 0.0f;
@@ -25,6 +32,11 @@ class BatteryCore {
               uint16_t module_port,
               uint8_t module_slave_id,
               uint8_t battery_slave_id);
+  BatteryCore(const std::string& module_ip,
+              uint16_t module_port,
+              uint8_t module_slave_id,
+              uint8_t battery_slave_id,
+              const RetryPolicy& retry_policy);
   ~BatteryCore();
 
   void printRegisterGroups() const;
@@ -85,6 +97,7 @@ class BatteryCore {
   uint8_t battery_slave_id_;
   uint16_t transaction_id_;
   int socket_fd_;
+  RetryPolicy retry_policy_;
   std::mutex socket_mutex_;
   std::vector<RegisterGroup> register_groups_;
 };

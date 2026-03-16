@@ -7,12 +7,16 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <random>
 #include <sstream>
+#include <thread>
 
 namespace hoist_hook {
 
@@ -24,6 +28,23 @@ uint16_t readBe16(const uint8_t* p) {
 
 uint32_t mergeUid(uint16_t high_word, uint16_t low_word) {
   return (static_cast<uint32_t>(high_word) << 16) | low_word;
+}
+
+int computeRetryDelayMs(const HoistHookCore::RetryPolicy& policy, int retry_index) {
+  if (retry_index <= 0) return 0;
+  const int base = std::max(0, policy.base_backoff_ms);
+  const int cap = std::max(base, policy.max_backoff_ms);
+  int delay = base;
+  for (int i = 1; i < retry_index && delay < cap; ++i) {
+    delay = std::min(cap, delay * 2);
+  }
+  const int jitter = std::max(0, policy.jitter_ms);
+  if (jitter > 0) {
+    thread_local std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> dist(0, jitter);
+    delay += dist(rng);
+  }
+  return delay;
 }
 
 }  // namespace
@@ -42,12 +63,19 @@ uint16_t HoistHookCore::crc16Modbus(const uint8_t* data, size_t len) {
   return crc;
 }
 
-HoistHookCore::HoistHookCore() : HoistHookCore("192.168.1.12", 502, 0x03, 0x04) {}
+HoistHookCore::HoistHookCore() : HoistHookCore("192.168.1.12", 502, 0x03, 0x04, RetryPolicy()) {}
 
 HoistHookCore::HoistHookCore(const std::string& module_ip,
                              uint16_t module_port,
                              uint8_t hook_slave_id,
                              uint8_t power_slave_id)
+    : HoistHookCore(module_ip, module_port, hook_slave_id, power_slave_id, RetryPolicy()) {}
+
+HoistHookCore::HoistHookCore(const std::string& module_ip,
+                             uint16_t module_port,
+                             uint8_t hook_slave_id,
+                             uint8_t power_slave_id,
+                             const RetryPolicy& retry_policy)
     : transport_(Transport::TCP),
       module_ip_(module_ip),
       module_port_(module_port),
@@ -61,6 +89,7 @@ HoistHookCore::HoistHookCore(const std::string& module_ip,
       transaction_id_(0x31A6),
       socket_fd_(-1),
       serial_fd_(-1),
+      retry_policy_(retry_policy),
       print_enabled_(true),
       register_groups_({
           {0x0000, 0x0063, "读/写混合", "指令寄存器（0~99）"},
@@ -74,6 +103,16 @@ HoistHookCore::HoistHookCore(const std::string& device,
                              int stop_bit,
                              uint8_t hook_slave_id,
                              uint8_t power_slave_id)
+    : HoistHookCore(device, baud, parity, data_bit, stop_bit, hook_slave_id, power_slave_id, RetryPolicy()) {}
+
+HoistHookCore::HoistHookCore(const std::string& device,
+                             int baud,
+                             char parity,
+                             int data_bit,
+                             int stop_bit,
+                             uint8_t hook_slave_id,
+                             uint8_t power_slave_id,
+                             const RetryPolicy& retry_policy)
     : transport_(Transport::RTU),
       module_ip_(),
       module_port_(0),
@@ -87,6 +126,7 @@ HoistHookCore::HoistHookCore(const std::string& device,
       transaction_id_(0x31A6),
       socket_fd_(-1),
       serial_fd_(-1),
+      retry_policy_(retry_policy),
       print_enabled_(true),
       register_groups_({
           {0x0000, 0x0063, "读/写混合", "指令寄存器（0~99）"},
@@ -135,7 +175,7 @@ std::vector<uint8_t> HoistHookCore::createModbusPacket(uint8_t function_code,
                                                        bool* ok) {
   if (ok) *ok = false;
   if (!(function_code == 0x03 || function_code == 0x06)) {
-    std::cout << "❌ 不支持的功能码，仅支持 0x03/0x06\n";
+    std::cout << "[hoist_hook] ❌ 不支持的功能码，仅支持 0x03/0x06\n";
     return {};
   }
 
@@ -187,16 +227,28 @@ bool HoistHookCore::sendModbusPacket(const std::vector<uint8_t>& packet,
   if (!response) return false;
   response->clear();
   std::lock_guard<std::mutex> lock(socket_mutex_);
-  if (!ensureConnectionLocked(timeout_sec)) return false;
-  if (sendAndReceiveLocked(packet, response, context)) {
+  const int max_retries = std::max(0, retry_policy_.max_retries);
+  for (int attempt = 0; attempt <= max_retries; ++attempt) {
+    if (attempt > 0) {
+      const int delay_ms = computeRetryDelayMs(retry_policy_, attempt);
+      if (delay_ms > 0) {
+        std::cout << "[hoist_hook] ⚠️ 第" << attempt << "/" << max_retries
+                  << "次重试，退避" << delay_ms << "ms: " << context << "\n";
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+      }
+    }
+    if (!ensureConnectionLocked(timeout_sec)) {
+      disconnectLocked();
+      continue;
+    }
+    if (sendAndReceiveLocked(packet, response, context)) {
+      disconnectLocked();
+      return true;
+    }
     disconnectLocked();
-    return true;
   }
-  disconnectLocked();
-  if (!ensureConnectionLocked(timeout_sec)) return false;
-  const bool ok = sendAndReceiveLocked(packet, response, context);
-  disconnectLocked();
-  return ok;
+  std::cout << "[hoist_hook] ❌ 重试耗尽，操作失败: " << context << "\n";
+  return false;
 }
 
 bool HoistHookCore::ensureConnectionLocked(double timeout_sec) {
@@ -205,7 +257,7 @@ bool HoistHookCore::ensureConnectionLocked(double timeout_sec) {
     if (serial_fd_ >= 0) return true;
     serial_fd_ = ::open(device_.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (serial_fd_ < 0) {
-      std::cout << "❌ 串口打开失败: " << device_ << " " << std::strerror(errno) << "\n";
+      std::cout << "[hoist_hook] ❌ 串口打开失败: " << device_ << " " << std::strerror(errno) << "\n";
       return false;
     }
     speed_t speed = B9600;
@@ -214,14 +266,14 @@ bool HoistHookCore::ensureConnectionLocked(double timeout_sec) {
     else if (baud_ == 57600) speed = B57600;
     else if (baud_ == 115200) speed = B115200;
     else if (baud_ != 9600) {
-      std::cout << "❌ 不支持的波特率: " << baud_ << "\n";
+      std::cout << "[hoist_hook] ❌ 不支持的波特率: " << baud_ << "\n";
       ::close(serial_fd_);
       serial_fd_ = -1;
       return false;
     }
     struct termios tio;
     if (::tcgetattr(serial_fd_, &tio) != 0) {
-      std::cout << "❌ tcgetattr 失败: " << std::strerror(errno) << "\n";
+      std::cout << "[hoist_hook] ❌ tcgetattr 失败: " << std::strerror(errno) << "\n";
       ::close(serial_fd_);
       serial_fd_ = -1;
       return false;
@@ -243,7 +295,7 @@ bool HoistHookCore::ensureConnectionLocked(double timeout_sec) {
     tio.c_cc[VMIN] = 0;
     tio.c_cc[VTIME] = 10;
     if (::tcsetattr(serial_fd_, TCSANOW, &tio) != 0) {
-      std::cout << "❌ tcsetattr 失败: " << std::strerror(errno) << "\n";
+      std::cout << "[hoist_hook] ❌ tcsetattr 失败: " << std::strerror(errno) << "\n";
       ::close(serial_fd_);
       serial_fd_ = -1;
       return false;
@@ -254,7 +306,7 @@ bool HoistHookCore::ensureConnectionLocked(double timeout_sec) {
   if (socket_fd_ >= 0) return true;
   socket_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
   if (socket_fd_ < 0) {
-    std::cout << "❌ socket 创建失败: " << std::strerror(errno) << "\n";
+    std::cout << "[hoist_hook] ❌ socket 创建失败: " << std::strerror(errno) << "\n";
     return false;
   }
   timeval tv{};
@@ -267,12 +319,12 @@ bool HoistHookCore::ensureConnectionLocked(double timeout_sec) {
   addr.sin_family = AF_INET;
   addr.sin_port = htons(module_port_);
   if (::inet_pton(AF_INET, module_ip_.c_str(), &addr.sin_addr) != 1) {
-    std::cout << "❌ 模块IP无效: " << module_ip_ << "\n";
+    std::cout << "[hoist_hook] ❌ 模块IP无效: " << module_ip_ << "\n";
     disconnectLocked();
     return false;
   }
   if (::connect(socket_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    std::cout << "❌ 连接失败: " << std::strerror(errno) << "\n";
+    std::cout << "[hoist_hook] ❌ 连接失败: " << std::strerror(errno) << "\n";
     disconnectLocked();
     return false;
   }
@@ -295,7 +347,7 @@ bool HoistHookCore::sendAndReceiveLocked(const std::vector<uint8_t>& packet,
                                          const std::string& context) {
   if (transport_ == Transport::RTU) {
     if (::write(serial_fd_, packet.data(), packet.size()) != static_cast<ssize_t>(packet.size())) {
-      std::cout << "❌ 串口发送失败: " << std::strerror(errno) << "\n";
+      std::cout << "[hoist_hook] ❌ 串口发送失败: " << std::strerror(errno) << "\n";
       return false;
     }
     response->clear();
@@ -317,19 +369,19 @@ bool HoistHookCore::sendAndReceiveLocked(const std::vector<uint8_t>& packet,
       elapsed += chunk_ms;
     }
     if (response->empty()) {
-      std::cout << "❌ 无响应: " << context << "\n";
+      std::cout << "[hoist_hook] ❌ 无响应: " << context << "\n";
       return false;
     }
     return true;
   }
   if (::send(socket_fd_, packet.data(), packet.size(), 0) < 0) {
-    std::cout << "❌ 发送失败: " << std::strerror(errno) << "\n";
+    std::cout << "[hoist_hook] ❌ 发送失败: " << std::strerror(errno) << "\n";
     return false;
   }
   uint8_t buf[1024];
   const ssize_t n = ::recv(socket_fd_, buf, sizeof(buf), 0);
   if (n <= 0) {
-    std::cout << "❌ 无响应: " << context << "\n";
+    std::cout << "[hoist_hook] ❌ 无响应: " << context << "\n";
     return false;
   }
   response->assign(buf, buf + n);
@@ -362,31 +414,31 @@ bool HoistHookCore::parseRegisterResponse(const std::vector<uint8_t>& response,
 
   if (transport_ == Transport::RTU) {
     if (response.size() < 5) {
-      std::cout << "❌ RTU 响应过短\n";
+      std::cout << "[hoist_hook] ❌ RTU 响应过短\n";
       return false;
     }
     const uint8_t recv_fc = response[1];
     if (recv_fc != function_code) {
       const uint8_t err = (recv_fc & 0x80) && response.size() > 2 ? response[2] : 0;
-      std::cout << "❌ 设备返回错误，错误码：0x" << std::hex << std::uppercase
+      std::cout << "[hoist_hook] ❌ 设备返回错误，错误码：0x" << std::hex << std::uppercase
                 << static_cast<int>(err) << std::dec << "\n";
       return false;
     }
     const uint8_t data_len = response[2];
     const size_t payload_end = static_cast<size_t>(3) + data_len;
     if (response.size() < payload_end + 2) {
-      std::cout << "❌ RTU 响应长度异常\n";
+      std::cout << "[hoist_hook] ❌ RTU 响应长度异常\n";
       return false;
     }
     const uint16_t crc_recv = static_cast<uint16_t>(response[payload_end])
                              | (static_cast<uint16_t>(response[payload_end + 1]) << 8);
     const uint16_t crc_calc = crc16Modbus(response.data(), payload_end);
     if (crc_calc != crc_recv) {
-      std::cout << "❌ RTU CRC 校验失败\n";
+      std::cout << "[hoist_hook] ❌ RTU CRC 校验失败\n";
       return false;
     }
     if (data_len < quantity * 2) {
-      std::cout << "❌ 数据长度不足\n";
+      std::cout << "[hoist_hook] ❌ 数据长度不足\n";
       return false;
     }
     for (uint16_t i = 0; i < quantity; ++i) {
@@ -397,23 +449,23 @@ bool HoistHookCore::parseRegisterResponse(const std::vector<uint8_t>& response,
   }
 
   if (response.size() < 9) {
-    std::cout << "❌ 响应报文过短\n";
+    std::cout << "[hoist_hook] ❌ 响应报文过短\n";
     return false;
   }
   const uint8_t recv_fc = response[7];
   if (recv_fc != function_code) {
     const uint8_t err = response.size() > 8 ? response[8] : 0;
-    std::cout << "❌ 设备返回错误，错误码：0x" << std::hex << std::uppercase
+    std::cout << "[hoist_hook] ❌ 设备返回错误，错误码：0x" << std::hex << std::uppercase
               << static_cast<int>(err) << std::dec << "\n";
     return false;
   }
   const uint8_t data_len = response[8];
   if (response.size() < static_cast<size_t>(9 + data_len)) {
-    std::cout << "❌ 响应长度异常\n";
+    std::cout << "[hoist_hook] ❌ 响应长度异常\n";
     return false;
   }
   if (data_len < quantity * 2) {
-    std::cout << "❌ 数据长度不足\n";
+    std::cout << "[hoist_hook] ❌ 数据长度不足\n";
     return false;
   }
   for (uint16_t i = 0; i < quantity; ++i) {
@@ -442,7 +494,7 @@ std::string HoistHookCore::describeRegister(uint16_t addr) const {
 bool HoistHookCore::confirmRiskyWrite(uint16_t addr) const {
   const bool risky = (addr >= 0x0000 && addr <= 0x0063);
   if (!risky) return true;
-  std::cout << "⚠️  即将写入指令寄存器，可能触发设备动作。请输入 YES 确认继续写入：";
+  std::cout << "[hoist_hook] ⚠️  即将写入指令寄存器，可能触发设备动作。请输入 YES 确认继续写入：";
   std::string input;
   std::getline(std::cin, input);
   return input == "YES";
@@ -461,12 +513,12 @@ void HoistHookCore::printRegisterGroups() const {
 
 void HoistHookCore::genericRead(uint16_t address, uint16_t quantity, int function_code) {
   if (quantity < 1 || quantity > 125) {
-    std::cout << "❌ 数量超限，读寄存器数量需在1~125\n";
+    std::cout << "[hoist_hook] ❌ 数量超限，读寄存器数量需在1~125\n";
     return;
   }
   const int fc = (function_code < 0) ? 0x03 : function_code;
   if (fc != 0x03) {
-    std::cout << "❌ 当前仅支持 0x03 读取\n";
+    std::cout << "[hoist_hook] ❌ 当前仅支持 0x03 读取\n";
     return;
   }
 
@@ -491,11 +543,11 @@ void HoistHookCore::genericRead(uint16_t address, uint16_t quantity, int functio
 void HoistHookCore::genericWrite(uint16_t address, uint16_t value, int function_code, bool skip_confirm, bool quiet) {
   const int fc = (function_code < 0) ? 0x06 : function_code;
   if (fc != 0x06) {
-    std::cout << "❌ 当前仅支持 0x06 写入\n";
+    std::cout << "[hoist_hook] ❌ 当前仅支持 0x06 写入\n";
     return;
   }
   if (!skip_confirm && !confirmRiskyWrite(address)) {
-    std::cout << "ℹ️ 已取消写入\n";
+    std::cout << "[hoist_hook] ℹ️ 已取消写入\n";
     return;
   }
 
@@ -508,10 +560,10 @@ void HoistHookCore::genericWrite(uint16_t address, uint16_t value, int function_
   if (!sendModbusPacket(packet, &response, "吊钩写寄存器")) return;
   if (print_enabled_ && !quiet) {
     if (response == packet) {
-      std::cout << "✅ 写入成功：0x" << std::hex << std::uppercase << std::setw(4)
+      std::cout << "[hoist_hook] ✅ 写入成功：0x" << std::hex << std::uppercase << std::setw(4)
                 << std::setfill('0') << address << std::dec << " <= " << value << "\n";
     } else {
-      std::cout << "⚠️ 写入响应异常\n";
+      std::cout << "[hoist_hook] ⚠️ 写入响应异常\n";
     }
   }
 }
@@ -545,7 +597,7 @@ void HoistHookCore::controlSpeaker(const std::string& mode, bool quiet) {
     v7 = 1;
     v3 = 1;
   } else {
-    std::cout << "❌ speaker 模式仅支持 off/7m/3m/both/7m_off/3m_off\n";
+    std::cout << "[hoist_hook] ❌ speaker 模式仅支持 off/7m/3m/both/7m_off/3m_off\n";
     return;
   }
 
@@ -560,12 +612,12 @@ void HoistHookCore::controlSpeaker(const std::string& mode, bool quiet) {
 
 void HoistHookCore::controlWarningLight(const std::string& status) {
   if (!(status == "on" || status == "off")) {
-    std::cout << "❌ light 状态仅支持 on/off\n";
+    std::cout << "[hoist_hook] ❌ light 状态仅支持 on/off\n";
     return;
   }
   const uint16_t value = (status == "on") ? 1 : 0;
   // 交互控制类命令在 print_status=false 时也需要有回显
-  std::cout << "🚨 设置警示灯: " << status << "\n";
+  std::cout << "[hoist_hook] 🚨 设置警示灯: " << status << "\n";
   // 文档：爆闪灯控制寄存器在指令区地址 0，对应 DEC 0；交互控制免确认
   genericWrite(0x0000, value, 0x06, true);
 }
@@ -642,13 +694,13 @@ void HoistHookCore::queryRfidInfo() {
     std::cout << "\n";
   }
   if (!has_valid) {
-    std::cout << "ℹ️ 当前没有有效RFID组\n";
+    std::cout << "[hoist_hook] ℹ️ 当前没有有效RFID组\n";
   } else {
     int valid_count = 0;
     for (int i = 0; i < 8; ++i) {
       if (((valid_mask >> i) & 0x1) != 0) ++valid_count;
     }
-    std::cout << "ℹ️ 有效RFID组数量: " << valid_count << "/8\n";
+    std::cout << "[hoist_hook] ℹ️ 有效RFID组数量: " << valid_count << "/8\n";
   }
 }
 
@@ -779,7 +831,7 @@ void HoistHookCore::queryHookInfo(const std::string& info_type) {
     queryPowerInfo();
     queryGpsInfo();
   } else if (print_enabled_) {
-    std::cout << "❌ 未知 info_type: " << info_type << "\n";
+    std::cout << "[hoist_hook] ❌ 未知 info_type: " << info_type << "\n";
   }
 }
 
