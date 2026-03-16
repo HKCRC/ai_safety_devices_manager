@@ -140,11 +140,17 @@ void DevicesManagerClient::applyBatteryButtonControl(std::uint8_t raw_cmd) {
   }
   if (last_battery_button_cmd_.has_value() && last_battery_button_cmd_.value() == cmd) return;
 
-  const std::vector<std::string> args{
-      (cmd == PowerCommand::PowerOn) ? "on" : "off",
-      std::to_string(battery_button_relay_channel_)};
-  const Status ctl = impl_->dispatchCommand("io_relay", args);
-  if (ctl.ok) {
+  if (battery_button_relay_channels_.empty()) return;
+
+  bool all_ok = true;
+  for (size_t i = 0; i < battery_button_relay_channels_.size(); ++i) {
+    const std::vector<std::string> args{
+        (cmd == PowerCommand::PowerOn) ? "on" : "off",
+        std::to_string(battery_button_relay_channels_[i])};
+    const Status ctl = impl_->dispatchCommand("io_relay", args);
+    if (!ctl.ok) all_ok = false;
+  }
+  if (all_ok) {
     last_battery_button_cmd_ = cmd;
   }
 }
@@ -200,8 +206,16 @@ Status DevicesManagerClient::start() {
   const int switch_gap_ms = impl_->hoistHookDefaults().both_speaker_switch_gap_ms;
   both_play_window_ = std::chrono::milliseconds(std::clamp(play_window_ms, 500, 60000));
   both_switch_gap_ = std::chrono::milliseconds(std::clamp(switch_gap_ms, 100, 10000));
-  battery_button_relay_channel_ =
-      std::clamp(impl_->ioRelayDefaults().battery_button_relay_channel, 1, 16);
+  battery_button_relay_channels_ = impl_->ioRelayDefaults().battery_button_relay_channels;
+  battery_button_relay_channels_.erase(
+      std::remove_if(battery_button_relay_channels_.begin(),
+                     battery_button_relay_channels_.end(),
+                     [](int ch) { return ch < 1 || ch > 16; }),
+      battery_button_relay_channels_.end());
+  std::sort(battery_button_relay_channels_.begin(), battery_button_relay_channels_.end());
+  battery_button_relay_channels_.erase(
+      std::unique(battery_button_relay_channels_.begin(), battery_button_relay_channels_.end()),
+      battery_button_relay_channels_.end());
   last_battery_button_cmd_.reset();
   last_push_ts_ = std::chrono::steady_clock::now() - std::chrono::seconds(1);
   notify_stop_ = false;

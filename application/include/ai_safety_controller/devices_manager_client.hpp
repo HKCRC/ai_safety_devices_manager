@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace ai_safety_controller {
 
@@ -114,7 +115,7 @@ class DevicesManagerClient {
   std::chrono::milliseconds both_play_window_{5000};
   std::chrono::milliseconds both_switch_gap_{200};
   std::chrono::steady_clock::time_point last_push_ts_{};
-  int battery_button_relay_channel_ = 1;
+  std::vector<int> battery_button_relay_channels_{};
   std::optional<PowerCommand> last_battery_button_cmd_;
   std::atomic<bool> notify_stop_{false};
   std::thread notify_thread_;

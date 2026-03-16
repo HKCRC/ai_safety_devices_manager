@@ -373,6 +373,23 @@ bool Interface::extractIntValue(const std::string& object_body, const std::strin
   return parseInt(m[1].str(), out);
 }
 
+bool Interface::extractIntArrayValue(const std::string& object_body,
+                                     const std::string& key,
+                                     std::vector<int>* out) {
+  if (!out) return false;
+  const std::regex re("\"" + key + "\"\\s*:\\s*\\[([^\\]]*)\\]");
+  std::smatch m;
+  if (!std::regex_search(object_body, m, re)) return false;
+  out->clear();
+  const std::string items = m[1].str();
+  const std::regex item_re("-?[0-9]+");
+  for (std::sregex_iterator it(items.begin(), items.end(), item_re), end; it != end; ++it) {
+    int value = 0;
+    if (parseInt(it->str(), &value)) out->push_back(value);
+  }
+  return true;
+}
+
 bool Interface::extractBoolValue(const std::string& object_body, const std::string& key, bool* out) {
   if (!out) return false;
   const std::regex re("\"" + key + "\"\\s*:\\s*(true|false|1|0)");
@@ -443,10 +460,18 @@ void Interface::applyIoRelayDefaultsFromJson(const std::string& json_text) {
   if (extractIntValue(body, "module_port", &module_port)) io_relay_defaults_.module_port = module_port;
   int module_slave_id = 0;
   if (extractIntValue(body, "module_slave_id", &module_slave_id)) io_relay_defaults_.module_slave_id = module_slave_id;
-  int battery_button_relay_channel = 0;
-  if (extractIntValue(body, "battery_button_relay_channel", &battery_button_relay_channel) &&
-      battery_button_relay_channel >= 1 && battery_button_relay_channel <= 16) {
-    io_relay_defaults_.battery_button_relay_channel = battery_button_relay_channel;
+  std::vector<int> battery_button_relay_channels;
+  if (extractIntArrayValue(body, "battery_button_relay_channels", &battery_button_relay_channels)) {
+    std::vector<int> channels_filtered;
+    channels_filtered.reserve(battery_button_relay_channels.size());
+    for (size_t i = 0; i < battery_button_relay_channels.size(); ++i) {
+      const int ch = battery_button_relay_channels[i];
+      if (ch >= 1 && ch <= 16) channels_filtered.push_back(ch);
+    }
+    std::sort(channels_filtered.begin(), channels_filtered.end());
+    channels_filtered.erase(std::unique(channels_filtered.begin(), channels_filtered.end()),
+                           channels_filtered.end());
+    io_relay_defaults_.battery_button_relay_channels = channels_filtered;
   }
   double query_hz = 0.0;
   if (extractDoubleValue(body, "query_hz", &query_hz)) io_relay_defaults_.query_hz = query_hz;
@@ -1151,6 +1176,17 @@ Status Interface::init() {
         io_relay_defaults_.module_ip,
         static_cast<uint16_t>(io_relay_defaults_.module_port),
         static_cast<uint8_t>(io_relay_defaults_.module_slave_id));
+    if (io_relay_defaults_.battery_button_relay_channels.empty()) {
+      std::cout << "[io_relay] battery_button_relay_channels is empty, "
+                   "battery button control is disabled\n";
+    } else {
+      std::cout << "[io_relay] battery_button_relay_channels:";
+      for (size_t i = 0; i < io_relay_defaults_.battery_button_relay_channels.size(); ++i) {
+        std::cout << (i == 0 ? " " : ", ")
+                  << io_relay_defaults_.battery_button_relay_channels[i];
+      }
+      std::cout << "\n";
+    }
   }
 #endif
 #ifdef ASC_ENABLE_MULTI_TURN_ENCODER
@@ -1186,6 +1222,11 @@ Status Interface::init() {
   for (size_t i = 0; i < spd_lidar_instances_.size(); ++i) {
     const SpdLidarInstanceDefaults& cfg = spd_lidar_instances_[i];
     if (!cfg.enable) continue;
+    std::cout << "[spd_lidar:" << cfg.id << "] instantiate with mode=" << cfg.mode
+              << " local=" << cfg.local_ip << ":" << cfg.local_port
+              << " device=" << cfg.device_ip << ":" << cfg.device_port;
+    if (!cfg.role.empty()) std::cout << " role=" << cfg.role;
+    std::cout << " vertical_angle_to_vertical_deg=" << cfg.vertical_angle_to_vertical_deg << "\n";
     std::unique_ptr<spd_lidar::SpdLidarCore> lidar = std::make_unique<spd_lidar::SpdLidarCore>();
     const std::string id = cfg.id;
     lidar->on_log.connect([](const std::string&) {});  // 静默，避免轮询刷屏

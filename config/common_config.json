@@ -1,7 +1,5 @@
 {
-  "version": {
-    "major": 0,
-    "minor": 1,
+ "version": {    "major": 0,    "minor": 1,
     "patch": 0
   },
   "build": {
@@ -15,31 +13,31 @@
   "runtime": {
     "battery": {
       "enable": true,
-      "module_ip": "127.0.0.1",
-      "module_port": 15020,
+      "module_ip": "192.168.61.89",
+      "module_port": 502,
       "module_slave_id": 3,
       "battery_slave_id": 2,
       "query_hz": 1.0
     },
     "solar": {
       "enable": true,
-      "module_ip": "127.0.0.1",
-      "module_port": 15020,
+      "module_ip": "192.168.61.89",
+      "module_port": 502,
       "module_slave_id": 3,
       "solar_slave_id": 4,
       "query_hz": 1.0
     },
     "io_relay": {
       "enable": true,
-      "module_ip": "127.0.0.1",
-      "module_port": 15020,
+      "module_ip": "192.168.61.89",
+      "module_port": 502,
       "module_slave_id": 3,
-      "battery_button_relay_channel": 1,
+      "battery_button_relay_channels": [1],
       "query_hz": 1.0
     },
     "hoist_hook": {
       "_comment": "transport=rtu 直连串口 Modbus RTU（9600 8N1）；transport=tcp 使用 module_ip/module_port",
-      "enable": true,
+      "enable": false,
       "transport": "rtu",
       "device": "/tmp/ttyHOIST0",
       "_device_comment": "RTU 模拟器 hoist_hook_rtu_sim.py 会在此路径创建虚拟串口，/tmp 无需 root 权限",
@@ -57,7 +55,7 @@
     },
     "multi_turn_encoder": {
       "_comment": "transport=rtu 使用串口参数；transport=tcp 使用 ip/port 参数",
-      "enable": true,
+      "enable": false,
       "transport": "rtu",
       "device": "/tmp/ttyENC1",
       "_device_comment": "RTU 模拟器 multi_turn_encoder_rtu_sim.py 会在此路径创建虚拟串口，/tmp 无需 root 权限",
@@ -80,18 +78,18 @@
           "mode": "client",
           "local_ip": "127.0.0.1",
           "local_port": 8234,
-          "device_ip": "127.0.0.1",
+          "device_ip": "192.168.61.91",
           "device_port": 8234,
           "role": "front_obstacle",
           "vertical_angle_to_vertical_deg": 0.0
         },
         {
           "id": "rear",
-          "enable": true,
+          "enable": false,
           "mode": "client",
           "local_ip": "127.0.0.1",
           "local_port": 8235,
-          "device_ip": "127.0.0.1",
+          "device_ip": "192.168.61.92",
           "device_port": 8235,
           "role": "rear_obstacle",
           "vertical_angle_to_vertical_deg": 0.0

@@ -75,7 +75,7 @@ class Interface {
     std::string module_ip = "192.168.1.12";
     int module_port = 502;
     int module_slave_id = 3;
-    int battery_button_relay_channel = 1;
+    std::vector<int> battery_button_relay_channels{};
     double query_hz = 0.0;
   };
 
@@ -178,6 +178,9 @@ class Interface {
   static std::vector<std::string> splitTopLevelObjects(const std::string& array_body);
   static bool extractStringValue(const std::string& object_body, const std::string& key, std::string* out);
   static bool extractIntValue(const std::string& object_body, const std::string& key, int* out);
+  static bool extractIntArrayValue(const std::string& object_body,
+                                   const std::string& key,
+                                   std::vector<int>* out);
   static bool extractBoolValue(const std::string& object_body, const std::string& key, bool* out);
   static bool extractDoubleValue(const std::string& object_body, const std::string& key, double* out);
   void applyBatteryDefaultsFromJson(const std::string& json_text);
