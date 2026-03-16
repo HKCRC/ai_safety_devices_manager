@@ -14,6 +14,7 @@ class SolarCore {
     int base_backoff_ms = 100;
     int max_backoff_ms = 500;
     int jitter_ms = 50;
+    bool log_enabled = true;
   };
 
   struct ChargeStatusSample {

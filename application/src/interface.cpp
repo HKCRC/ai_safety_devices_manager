@@ -516,6 +516,10 @@ void Interface::applyBatteryDefaultsFromJson(const std::string& json_text) {
   if (extractIntValue(body, "module_slave_id", &module_slave_id)) battery_defaults_.module_slave_id = module_slave_id;
   int battery_slave_id = 0;
   if (extractIntValue(body, "battery_slave_id", &battery_slave_id)) battery_defaults_.battery_slave_id = battery_slave_id;
+  bool charge_time_debug = false;
+  if (extractBoolValue(body, "charge_time_debug", &charge_time_debug)) {
+    battery_defaults_.charge_time_debug = charge_time_debug;
+  }
   double query_hz = 0.0;
   if (extractDoubleValue(body, "query_hz", &query_hz)) battery_defaults_.query_hz = query_hz;
   const std::string retry_body = extractObjectBody(body, "retry");
@@ -532,6 +536,9 @@ void Interface::applyBatteryDefaultsFromJson(const std::string& json_text) {
     int jitter_ms = 0;
     if (extractIntValue(retry_body, "jitter_ms", &jitter_ms))
       battery_defaults_.retry_policy.jitter_ms = std::max(0, jitter_ms);
+    bool retry_log_enabled = true;
+    if (extractBoolValue(retry_body, "log_enabled", &retry_log_enabled))
+      battery_defaults_.retry_policy.log_enabled = retry_log_enabled;
   }
 }
 
@@ -567,6 +574,9 @@ void Interface::applySolarDefaultsFromJson(const std::string& json_text) {
     int jitter_ms = 0;
     if (extractIntValue(retry_body, "jitter_ms", &jitter_ms))
       solar_defaults_.retry_policy.jitter_ms = std::max(0, jitter_ms);
+    bool retry_log_enabled = true;
+    if (extractBoolValue(retry_body, "log_enabled", &retry_log_enabled))
+      solar_defaults_.retry_policy.log_enabled = retry_log_enabled;
   }
 }
 
@@ -613,6 +623,9 @@ void Interface::applyIoRelayDefaultsFromJson(const std::string& json_text) {
     int jitter_ms = 0;
     if (extractIntValue(retry_body, "jitter_ms", &jitter_ms))
       io_relay_defaults_.retry_policy.jitter_ms = std::max(0, jitter_ms);
+    bool retry_log_enabled = true;
+    if (extractBoolValue(retry_body, "log_enabled", &retry_log_enabled))
+      io_relay_defaults_.retry_policy.log_enabled = retry_log_enabled;
   }
 }
 
@@ -677,6 +690,9 @@ void Interface::applyHoistHookDefaultsFromJson(const std::string& json_text) {
     int jitter_ms = 0;
     if (extractIntValue(retry_body, "jitter_ms", &jitter_ms))
       hoist_hook_defaults_.retry_policy.jitter_ms = std::max(0, jitter_ms);
+    bool retry_log_enabled = true;
+    if (extractBoolValue(retry_body, "log_enabled", &retry_log_enabled))
+      hoist_hook_defaults_.retry_policy.log_enabled = retry_log_enabled;
   }
 }
 
@@ -1306,7 +1322,9 @@ Status Interface::init() {
             battery_defaults_.retry_policy.max_retries,
             battery_defaults_.retry_policy.base_backoff_ms,
             battery_defaults_.retry_policy.max_backoff_ms,
-            battery_defaults_.retry_policy.jitter_ms});
+            battery_defaults_.retry_policy.jitter_ms,
+            battery_defaults_.retry_policy.log_enabled});
+    battery_->setChargeTimeDebugEnabled(battery_defaults_.charge_time_debug);
   }
 #endif
 #ifdef ASC_ENABLE_HOIST_HOOK
@@ -1324,7 +1342,8 @@ Status Interface::init() {
               hoist_hook_defaults_.retry_policy.max_retries,
               hoist_hook_defaults_.retry_policy.base_backoff_ms,
               hoist_hook_defaults_.retry_policy.max_backoff_ms,
-              hoist_hook_defaults_.retry_policy.jitter_ms});
+              hoist_hook_defaults_.retry_policy.jitter_ms,
+              hoist_hook_defaults_.retry_policy.log_enabled});
     } else {
       hoist_hook_ = std::make_unique<hoist_hook::HoistHookCore>(
           hoist_hook_defaults_.module_ip,
@@ -1335,7 +1354,8 @@ Status Interface::init() {
               hoist_hook_defaults_.retry_policy.max_retries,
               hoist_hook_defaults_.retry_policy.base_backoff_ms,
               hoist_hook_defaults_.retry_policy.max_backoff_ms,
-              hoist_hook_defaults_.retry_policy.jitter_ms});
+              hoist_hook_defaults_.retry_policy.jitter_ms,
+              hoist_hook_defaults_.retry_policy.log_enabled});
     }
   }
 #endif
@@ -1349,7 +1369,8 @@ Status Interface::init() {
             io_relay_defaults_.retry_policy.max_retries,
             io_relay_defaults_.retry_policy.base_backoff_ms,
             io_relay_defaults_.retry_policy.max_backoff_ms,
-            io_relay_defaults_.retry_policy.jitter_ms});
+            io_relay_defaults_.retry_policy.jitter_ms,
+            io_relay_defaults_.retry_policy.log_enabled});
     if (io_relay_defaults_.battery_button_relay_channels.empty()) {
       std::cout << "[io_relay] battery_button_relay_channels is empty, "
                    "battery button control is disabled\n";
@@ -1390,7 +1411,8 @@ Status Interface::init() {
             solar_defaults_.retry_policy.max_retries,
             solar_defaults_.retry_policy.base_backoff_ms,
             solar_defaults_.retry_policy.max_backoff_ms,
-            solar_defaults_.retry_policy.jitter_ms});
+            solar_defaults_.retry_policy.jitter_ms,
+            solar_defaults_.retry_policy.log_enabled});
   }
 #endif
 #ifdef ASC_ENABLE_SPD_LIDAR

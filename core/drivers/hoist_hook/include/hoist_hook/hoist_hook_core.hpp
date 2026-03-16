@@ -15,6 +15,7 @@ class HoistHookCore {
     int base_backoff_ms = 100;
     int max_backoff_ms = 500;
     int jitter_ms = 50;
+    bool log_enabled = true;
   };
 
   HoistHookCore();
@@ -115,6 +116,7 @@ class HoistHookCore {
   void queryGpsInfo();
   void queryHeartbeat();
   void queryWorkMode();
+  void syncWarningLightWithSpeaker(bool quiet);
 
   const Transport transport_;
   const std::string module_ip_;

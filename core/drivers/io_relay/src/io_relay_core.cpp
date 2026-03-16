@@ -117,8 +117,10 @@ bool IoRelayCore::sendModbusPacket(const std::vector<uint8_t>& packet,
     if (attempt > 0) {
       const int delay_ms = computeRetryDelayMs(retry_policy_, attempt);
       if (delay_ms > 0) {
-        std::cout << "[io_relay] ⚠️ 第" << attempt << "/" << max_retries
-                  << "次重试，退避" << delay_ms << "ms: " << context << "\n";
+        if (retry_policy_.log_enabled) {
+          std::cout << "[io_relay] ⚠️ 第" << attempt << "/" << max_retries
+                    << "次重试，退避" << delay_ms << "ms: " << context << "\n";
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
       }
     }
@@ -132,7 +134,9 @@ bool IoRelayCore::sendModbusPacket(const std::vector<uint8_t>& packet,
     }
     disconnectLocked();
   }
-  std::cout << "[io_relay] ❌ 重试耗尽，操作失败: " << context << "\n";
+  if (retry_policy_.log_enabled) {
+    std::cout << "[io_relay] ❌ 重试耗尽，操作失败: " << context << "\n";
+  }
   return false;
 }
 

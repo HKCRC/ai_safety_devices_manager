@@ -14,6 +14,7 @@ class BatteryCore {
     int base_backoff_ms = 100;
     int max_backoff_ms = 500;
     int jitter_ms = 50;
+    bool log_enabled = true;
   };
 
   struct Summary {
@@ -53,6 +54,7 @@ class BatteryCore {
 
   bool isOnline(double timeout_sec = 1.0);
   bool readSummary(Summary* out, double timeout_sec = 5.0);
+  void setChargeTimeDebugEnabled(bool enabled);
 
  private:
   struct RegisterGroup {
@@ -98,6 +100,7 @@ class BatteryCore {
   uint16_t transaction_id_;
   int socket_fd_;
   RetryPolicy retry_policy_;
+  bool charge_time_debug_enabled_ = false;
   std::mutex socket_mutex_;
   std::vector<RegisterGroup> register_groups_;
 };

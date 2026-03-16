@@ -232,8 +232,10 @@ bool HoistHookCore::sendModbusPacket(const std::vector<uint8_t>& packet,
     if (attempt > 0) {
       const int delay_ms = computeRetryDelayMs(retry_policy_, attempt);
       if (delay_ms > 0) {
-        std::cout << "[hoist_hook] ⚠️ 第" << attempt << "/" << max_retries
-                  << "次重试，退避" << delay_ms << "ms: " << context << "\n";
+        if (retry_policy_.log_enabled) {
+          std::cout << "[hoist_hook] ⚠️ 第" << attempt << "/" << max_retries
+                    << "次重试，退避" << delay_ms << "ms: " << context << "\n";
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
       }
     }
@@ -247,7 +249,9 @@ bool HoistHookCore::sendModbusPacket(const std::vector<uint8_t>& packet,
     }
     disconnectLocked();
   }
-  std::cout << "[hoist_hook] ❌ 重试耗尽，操作失败: " << context << "\n";
+  if (retry_policy_.log_enabled) {
+    std::cout << "[hoist_hook] ❌ 重试耗尽，操作失败: " << context << "\n";
+  }
   return false;
 }
 
@@ -574,11 +578,13 @@ void HoistHookCore::controlSpeaker(const std::string& mode, bool quiet) {
   if (mode == "7m_off") {
     if (!quiet) std::cout << "🔊 设置喇叭模式: 7m_off（仅关 7m）\n";
     genericWrite(0x0001, 0, 0x06, true, quiet);
+    syncWarningLightWithSpeaker(quiet);
     return;
   }
   if (mode == "3m_off") {
     if (!quiet) std::cout << "🔊 设置喇叭模式: 3m_off（仅关 3m）\n";
     genericWrite(0x0002, 0, 0x06, true, quiet);
+    syncWarningLightWithSpeaker(quiet);
     return;
   }
 
@@ -607,6 +613,30 @@ void HoistHookCore::controlSpeaker(const std::string& mode, bool quiet) {
   }
   if (v3 != 0 || mode == "off") {
     genericWrite(0x0002, v3, 0x06, true, quiet);
+  }
+  syncWarningLightWithSpeaker(quiet);
+}
+
+void HoistHookCore::syncWarningLightWithSpeaker(bool quiet) {
+  std::vector<uint8_t> response;
+  if (!sendRead(0x03, 0x0001, 2, hook_slave_id_, &response)) {
+    if (!quiet) {
+      std::cout << "[hoist_hook] ⚠️ 喇叭-爆闪灯联动失败：读取喇叭状态失败\n";
+    }
+    return;
+  }
+  std::vector<uint16_t> values;
+  if (!parseRegisterResponse(response, 0x03, 2, &values) || values.size() < 2) {
+    if (!quiet) {
+      std::cout << "[hoist_hook] ⚠️ 喇叭-爆闪灯联动失败：解析喇叭状态失败\n";
+    }
+    return;
+  }
+  const bool any_speaker_on = ((values[0] & 0x0001u) != 0u) || ((values[1] & 0x0001u) != 0u);
+  genericWrite(0x0000, any_speaker_on ? 1u : 0u, 0x06, true, true);
+  if (!quiet) {
+    std::cout << "[hoist_hook] 🔁 喇叭联动爆闪灯: "
+              << (any_speaker_on ? "开启" : "关闭") << "\n";
   }
 }
 

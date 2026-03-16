@@ -25,6 +25,34 @@ uint16_t readBe16(const uint8_t* p) {
   return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | p[1]);
 }
 
+std::uint32_t estimateChargeRemainingMinutes(double q_rem_ah,
+                                             double q_full_ah,
+                                             double soc_percent,
+                                             double current_a) {
+  if (q_full_ah <= 0.0 || current_a <= 0.05) return 0u;
+  if (soc_percent < 0.0) soc_percent = 0.0;
+  if (soc_percent > 100.0) soc_percent = 100.0;
+
+  // Preferred estimator: capacity gap / charging current.
+  double t_cap_min = -1.0;
+  const double q_gap_ah = q_full_ah - q_rem_ah;
+  if (q_gap_ah > 0.0) {
+    t_cap_min = (q_gap_ah / current_a) * 60.0;
+  }
+
+  // Fallback estimator: SOC gap / charging current.
+  double t_soc_min = -1.0;
+  const double q_soc_gap_ah = ((100.0 - soc_percent) / 100.0) * q_full_ah;
+  if (q_soc_gap_ah > 0.0) {
+    t_soc_min = (q_soc_gap_ah / current_a) * 60.0;
+  }
+
+  double chosen = t_cap_min >= 0.0 ? t_cap_min : t_soc_min;
+  if (chosen < 0.0) return 0u;
+  if (chosen > 24.0 * 60.0) chosen = 24.0 * 60.0;  // Clamp to one day.
+  return static_cast<std::uint32_t>(chosen + 0.5);
+}
+
 int computeRetryDelayMs(const BatteryCore::RetryPolicy& policy, int retry_index) {
   if (retry_index <= 0) return 0;
   const int base = std::max(0, policy.base_backoff_ms);
@@ -155,15 +183,53 @@ bool BatteryCore::readSummary(Summary* out, double timeout_sec) {
   s.soc_percent = static_cast<float>(values[0] * 0.01);
   s.voltage_v = static_cast<float>(values[2] * 0.01);
   s.current_a = static_cast<float>(toSigned16(values[1]) * 0.01);
-  s.remaining_discharge_min =
-      (values[7] == 0xFFFFu) ? 0u : static_cast<std::uint32_t>(values[7]);
-  s.remaining_charge_min =
-      (values[8] == 0xFFFFu) ? 0u : static_cast<std::uint32_t>(values[8]);
+  s.remaining_discharge_min = (values[7] == 0xFFFFu) ? 0u : static_cast<std::uint32_t>(values[7]);
+  const std::uint16_t charge_time_raw = values[8];
+  const bool has_valid_charge_time_raw = (charge_time_raw != 0xFFFFu) && (charge_time_raw > 0u);
+  const bool charge_path_available = !has_charge_mos || (charge_mos != 0u);
+  const bool is_charging_now = charge_path_available && (s.current_a > 0.05f);
+  const double q_rem_ah = static_cast<double>(values[3]) * 0.1;
+  const double q_full_ah = static_cast<double>(values[4]) * 0.1;
+  const std::uint32_t estimate_charge_min = is_charging_now
+      ? estimateChargeRemainingMinutes(
+            q_rem_ah, q_full_ah, static_cast<double>(s.soc_percent), static_cast<double>(s.current_a))
+      : 0u;
+  const char* charge_time_source = "none";
+  if (has_valid_charge_time_raw) {
+    // Prefer battery-reported charge remaining time when available.
+    s.remaining_charge_min = static_cast<std::uint32_t>(charge_time_raw);
+    charge_time_source = "raw";
+  } else {
+    if (is_charging_now) {
+      s.remaining_charge_min = estimate_charge_min;
+      charge_time_source = "estimate";
+    } else {
+      s.remaining_charge_min = 0u;
+      charge_time_source = "not_charging";
+    }
+  }
+  if (charge_time_debug_enabled_) {
+    std::cout << "[battery] [charge_time_debug] raw=" << charge_time_raw
+              << " valid_raw=" << (has_valid_charge_time_raw ? "true" : "false")
+              << " estimate=" << estimate_charge_min
+              << " selected=" << s.remaining_charge_min
+              << " source=" << charge_time_source
+              << " currentA=" << s.current_a
+              << " soc=" << s.soc_percent
+              << " q_rem_ah=" << q_rem_ah
+              << " q_full_ah=" << q_full_ah
+              << " charge_mos=" << (has_charge_mos ? std::to_string(charge_mos) : "n/a")
+              << "\n";
+  }
   s.has_charge_mos = has_charge_mos;
   s.charge_mos = charge_mos;
   s.ok = true;
   *out = s;
   return true;
+}
+
+void BatteryCore::setChargeTimeDebugEnabled(bool enabled) {
+  charge_time_debug_enabled_ = enabled;
 }
 
 std::vector<uint8_t> BatteryCore::createModbusPacket(uint8_t function_code,
@@ -216,8 +282,10 @@ bool BatteryCore::sendModbusPacket(const std::vector<uint8_t>& packet,
     if (attempt > 0) {
       const int delay_ms = computeRetryDelayMs(retry_policy_, attempt);
       if (delay_ms > 0) {
-        std::cout << "[battery] ⚠️ 第" << attempt << "/" << max_retries
-                  << "次重试，退避" << delay_ms << "ms: " << context << "\n";
+        if (retry_policy_.log_enabled) {
+          std::cout << "[battery] ⚠️ 第" << attempt << "/" << max_retries
+                    << "次重试，退避" << delay_ms << "ms: " << context << "\n";
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
       }
     }
@@ -231,7 +299,9 @@ bool BatteryCore::sendModbusPacket(const std::vector<uint8_t>& packet,
     }
     disconnectLocked();
   }
-  std::cout << "[battery] ❌ 重试耗尽，操作失败: " << context << "\n";
+  if (retry_policy_.log_enabled) {
+    std::cout << "[battery] ❌ 重试耗尽，操作失败: " << context << "\n";
+  }
   return false;
 }
 

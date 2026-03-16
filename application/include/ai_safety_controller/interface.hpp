@@ -57,6 +57,7 @@ class Interface {
     int base_backoff_ms = 100;
     int max_backoff_ms = 500;
     int jitter_ms = 50;
+    bool log_enabled = true;
   };
 
   struct BatteryDefaults {
@@ -65,6 +66,7 @@ class Interface {
     int module_port = 502;
     int module_slave_id = 3;
     int battery_slave_id = 2;
+    bool charge_time_debug = false;
     double query_hz = 0.0;
     RetryPolicy retry_policy{};
   };

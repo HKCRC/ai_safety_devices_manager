@@ -17,12 +17,14 @@
       "module_port": 502,
       "module_slave_id": 3,
       "battery_slave_id": 2,
+      "charge_time_debug": false,
       "query_hz": 1.0,
       "retry": {
         "max_retries": 2,
         "base_backoff_ms": 100,
         "max_backoff_ms": 500,
-        "jitter_ms": 50
+        "jitter_ms": 50,
+        "log_enabled": false
       }
     },
     "solar": {
@@ -36,7 +38,8 @@
         "max_retries": 2,
         "base_backoff_ms": 100,
         "max_backoff_ms": 500,
-        "jitter_ms": 50
+        "jitter_ms": 50,
+        "log_enabled": false
       }
     },
     "io_relay": {
@@ -50,7 +53,8 @@
         "max_retries": 2,
         "base_backoff_ms": 100,
         "max_backoff_ms": 500,
-        "jitter_ms": 50
+        "jitter_ms": 50,
+        "log_enabled": false
       }
     },
     "hoist_hook": {
@@ -74,7 +78,8 @@
         "max_retries": 2,
         "base_backoff_ms": 100,
         "max_backoff_ms": 500,
-        "jitter_ms": 50
+        "jitter_ms": 50,
+        "log_enabled": false
       }
     },
     "multi_turn_encoder": {
