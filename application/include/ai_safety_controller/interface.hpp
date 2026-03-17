@@ -38,6 +38,7 @@ namespace ai_safety_controller {
 using DeviceStatus = ai_safety_common::DeviceStatus;
 using AlertMessage = ai_safety_common::AlertMessage;
 using CraneState = ai_safety_common::CraneState;
+using PowerCommand = ai_safety_common::JoystickControlData::PowerCommand;
 
 class DriverAdapter {
  public:
@@ -168,6 +169,8 @@ class Interface {
   std::vector<std::string> availableCommands(const std::string& sensor) const;
   void setDeviceStatus(const DeviceStatus& data);
   DeviceStatus getDeviceStatus() const;
+  void setPowerCommand(PowerCommand cmd);
+  PowerCommand getPowerCommand() const;
   CraneState getCraneState() const;
   std::unordered_map<std::string, std::uint16_t> getLatestLidarRawMm() const;
   AlertMessage getAlertMessage() const;
@@ -281,6 +284,8 @@ class Interface {
   std::uint8_t latest_battery_button_signals_ = 0;
   std::unordered_map<std::string, double> latest_lidar_projected_distance_m_;
   std::unordered_map<std::string, std::uint16_t> latest_lidar_raw_mm_;
+  std::atomic<std::uint8_t> latest_power_command_{
+      static_cast<std::uint8_t>(PowerCommand::None)};
   mutable std::mutex snapshot_mutex_;
   mutable std::mutex device_status_mutex_;
   mutable std::mutex crane_state_mutex_;

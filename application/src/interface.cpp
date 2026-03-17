@@ -343,6 +343,18 @@ DeviceStatus Interface::getDeviceStatus() const {
   return latest_device_status_;
 }
 
+void Interface::setPowerCommand(PowerCommand cmd) {
+  latest_power_command_.store(static_cast<std::uint8_t>(cmd), std::memory_order_relaxed);
+}
+
+PowerCommand Interface::getPowerCommand() const {
+  const std::uint8_t raw = latest_power_command_.load(std::memory_order_relaxed);
+  if (raw > static_cast<std::uint8_t>(PowerCommand::PowerOff)) {
+    return PowerCommand::None;
+  }
+  return static_cast<PowerCommand>(raw);
+}
+
 CraneState Interface::getCraneState() const {
   std::lock_guard<std::mutex> lock(crane_state_mutex_);
   return latest_crane_state_;
@@ -1171,6 +1183,12 @@ void Interface::updateTrolleyStateFromDrivers() {
     }
   }
 #endif
+
+  if (getPowerCommand() == PowerCommand::PowerOff) {
+    data.trolleyState = DeviceStatus::EquipmentState::Standby;
+    setDeviceStatus(data);
+    return;
+  }
 
   bool encoder_ok = false;
 #ifdef ASC_ENABLE_MULTI_TURN_ENCODER

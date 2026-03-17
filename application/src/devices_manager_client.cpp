@@ -151,6 +151,7 @@ void DevicesManagerClient::applyBatteryButtonControl(std::uint8_t raw_cmd) {
     if (!ctl.ok) all_ok = false;
   }
   if (all_ok) {
+    impl_->setPowerCommand(cmd);
     last_battery_button_cmd_ = cmd;
   }
 }
@@ -217,6 +218,7 @@ Status DevicesManagerClient::start() {
       std::unique(battery_button_relay_channels_.begin(), battery_button_relay_channels_.end()),
       battery_button_relay_channels_.end());
   last_battery_button_cmd_.reset();
+  impl_->setPowerCommand(PowerCommand::None);
   last_push_ts_ = std::chrono::steady_clock::now() - std::chrono::seconds(1);
   notify_stop_ = false;
   notify_thread_ = std::thread(&DevicesManagerClient::notifyThreadFunc, this);
