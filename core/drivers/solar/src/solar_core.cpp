@@ -316,6 +316,10 @@ int32_t SolarCore::parseSigned32FromLH(uint16_t low_word, uint16_t high_word) co
   return static_cast<int32_t>(raw);
 }
 
+void SolarCore::setChargeSampleTimeoutSec(double timeout_sec) {
+  charge_sample_timeout_sec_ = std::min(std::max(timeout_sec, 0.1), 10.0);
+}
+
 bool SolarCore::readChargeStatusSample(ChargeStatusSample* out) {
   if (!out) return false;
   out->ok = false;
@@ -323,12 +327,12 @@ bool SolarCore::readChargeStatusSample(ChargeStatusSample* out) {
   out->battery_current_a = 0.0;
 
   std::vector<uint8_t> status_resp;
-  if (!sendSolarRead(0x04, 0x3201, 1, solar_slave_id_, &status_resp)) return false;
+  if (!sendSolarRead(0x04, 0x3201, 1, solar_slave_id_, &status_resp, charge_sample_timeout_sec_)) return false;
   std::vector<uint16_t> status_values;
   if (!parseRegisterResponse(status_resp, 0x04, 1, &status_values) || status_values.empty()) return false;
 
   std::vector<uint8_t> batt_curr_resp;
-  if (!sendSolarRead(0x04, 0x331B, 2, solar_slave_id_, &batt_curr_resp)) return false;
+  if (!sendSolarRead(0x04, 0x331B, 2, solar_slave_id_, &batt_curr_resp, charge_sample_timeout_sec_)) return false;
   std::vector<uint16_t> batt_curr_values;
   if (!parseRegisterResponse(batt_curr_resp, 0x04, 2, &batt_curr_values) || batt_curr_values.size() < 2) {
     return false;

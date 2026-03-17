@@ -37,6 +37,7 @@ class SolarCore {
 
   void printRegisterGroups() const;
   void querySolarInfo(const std::string& info_type);
+  void setChargeSampleTimeoutSec(double timeout_sec);
   bool readChargeStatusSample(ChargeStatusSample* out);
   static bool hasChargeFault(uint16_t charge_status_word);
   void scanSolarSlaveIds(int start_id, int end_id);
@@ -92,6 +93,7 @@ class SolarCore {
   uint16_t transaction_id_;
   int socket_fd_;
   RetryPolicy retry_policy_;
+  double charge_sample_timeout_sec_ = 5.0;
   std::mutex socket_mutex_;
   std::vector<RegisterGroup> register_groups_;
 };

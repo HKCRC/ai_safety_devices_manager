@@ -570,6 +570,14 @@ void Interface::applySolarDefaultsFromJson(const std::string& json_text) {
   if (extractIntValue(body, "module_slave_id", &module_slave_id)) solar_defaults_.module_slave_id = module_slave_id;
   int solar_slave_id = 0;
   if (extractIntValue(body, "solar_slave_id", &solar_slave_id)) solar_defaults_.solar_slave_id = solar_slave_id;
+  double sample_timeout_sec = 0.0;
+  if (extractDoubleValue(body, "sample_timeout_sec", &sample_timeout_sec)) {
+    solar_defaults_.sample_timeout_sec = std::min(std::max(sample_timeout_sec, 0.1), 10.0);
+  }
+  int stale_timeout_ms = 0;
+  if (extractIntValue(body, "stale_timeout_ms", &stale_timeout_ms)) {
+    solar_defaults_.stale_timeout_ms = std::max(100, stale_timeout_ms);
+  }
   double query_hz = 0.0;
   if (extractDoubleValue(body, "query_hz", &query_hz)) solar_defaults_.query_hz = query_hz;
   const std::string retry_body = extractObjectBody(body, "retry");
@@ -1506,6 +1514,8 @@ Status Interface::init() {
             solar_defaults_.retry_policy.max_backoff_ms,
             solar_defaults_.retry_policy.jitter_ms,
             solar_defaults_.retry_policy.log_enabled});
+    solar_->setChargeSampleTimeoutSec(solar_defaults_.sample_timeout_sec);
+    solar_charge_last_ok_ms_.store(0, std::memory_order_relaxed);
   }
 #endif
 #ifdef ASC_ENABLE_SPD_LIDAR
@@ -1637,6 +1647,8 @@ Status Interface::queryBattery(const std::vector<std::string>& args) {
 
 #ifdef ASC_ENABLE_SOLAR
 void Interface::updateSolarChargeStateFromDriver() {
+  const std::int64_t stale_timeout_ms = static_cast<std::int64_t>(
+      std::max(100, solar_defaults_.stale_timeout_ms));
   DeviceStatus data = getDeviceStatus();
   if (!solar_) {
     if (solar_defaults_.enable) {
@@ -1646,11 +1658,31 @@ void Interface::updateSolarChargeStateFromDriver() {
     return;
   }
 
-  solar::SolarCore::ChargeStatusSample sample;
-  if (!solar_->readChargeStatusSample(&sample) || !sample.ok) {
+  // Rule 1: if trolley battery is already offline, solar state is considered faulted.
+  if (data.trolleyState == DeviceStatus::EquipmentState::Offline) {
+    data.solarCharge = DeviceStatus::SolarChargeState::Fault;
     setDeviceStatus(data);
     return;
   }
+
+  solar::SolarCore::ChargeStatusSample sample;
+  if (!solar_->readChargeStatusSample(&sample) || !sample.ok) {
+    const std::int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count();
+    const std::int64_t last_ok_ms = solar_charge_last_ok_ms_.load(std::memory_order_relaxed);
+    const bool stale = (last_ok_ms <= 0) || ((now_ms - last_ok_ms) > stale_timeout_ms);
+    if (stale) {
+      data.solarCharge = DeviceStatus::SolarChargeState::Fault;
+    }
+    setDeviceStatus(data);
+    return;
+  }
+
+  const std::int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count();
+  solar_charge_last_ok_ms_.store(now_ms, std::memory_order_relaxed);
 
   if (solar::SolarCore::hasChargeFault(sample.charge_status_word)) {
     data.solarCharge = DeviceStatus::SolarChargeState::Fault;
@@ -1767,11 +1799,15 @@ Status Interface::queryIoRelay(const std::vector<std::string>& args) {
     if (args.size() < 2) return Status{false, "usage: io_relay on|off <channel>"};
     int ch = 0;
     if (!parseInt(args[1], &ch)) return Status{false, "invalid channel"};
-    io_relay_->controlRelay(ch, cmd);
+    if (!io_relay_->controlRelay(ch, cmd)) {
+      return Status{false, "io_relay control failed"};
+    }
   } else if (cmd == "read") {
     int ch = 0;
     if (args.size() >= 2 && !parseInt(args[1], &ch)) return Status{false, "invalid channel"};
-    io_relay_->readRelayStatus(ch);
+    if (!io_relay_->readRelayStatus(ch)) {
+      return Status{false, "io_relay read failed"};
+    }
   } else {
     return Status{false, "unknown io_relay command"};
   }

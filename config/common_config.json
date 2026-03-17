@@ -33,6 +33,8 @@
       "module_port": 502,
       "module_slave_id": 3,
       "solar_slave_id": 4,
+      "sample_timeout_sec": 1.5,
+      "stale_timeout_ms": 2500,
       "query_hz": 1.0,
       "retry": {
         "max_retries": 2,

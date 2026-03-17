@@ -27,8 +27,8 @@ class IoRelayCore {
               const RetryPolicy& retry_policy);
   ~IoRelayCore();
 
-  void controlRelay(int relay_num, const std::string& status);
-  void readRelayStatus(int relay_num);  // relay_num <= 0 means read all
+  bool controlRelay(int relay_num, const std::string& status);
+  bool readRelayStatus(int relay_num);  // relay_num <= 0 means read all
 
  private:
   std::vector<uint8_t> createModbusPacket(uint8_t function_code,

@@ -78,6 +78,8 @@ class Interface {
     int module_port = 502;
     int module_slave_id = 3;
     int solar_slave_id = 4;
+    double sample_timeout_sec = 5.0;
+    int stale_timeout_ms = 2500;
     double query_hz = 0.0;
     RetryPolicy retry_policy{};
   };
@@ -307,6 +309,7 @@ class Interface {
 #endif
 #ifdef ASC_ENABLE_SOLAR
   std::unique_ptr<solar::SolarCore> solar_;
+  std::atomic<std::int64_t> solar_charge_last_ok_ms_{0};
 #endif
 #ifdef ASC_ENABLE_SPD_LIDAR
   std::unordered_map<std::string, std::unique_ptr<spd_lidar::SpdLidarCore>> spd_lidar_instances_core_;

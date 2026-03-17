@@ -195,34 +195,36 @@ bool IoRelayCore::sendAndReceiveLocked(const std::vector<uint8_t>& packet,
   return true;
 }
 
-void IoRelayCore::controlRelay(int relay_num, const std::string& status) {
+bool IoRelayCore::controlRelay(int relay_num, const std::string& status) {
   uint16_t coil_addr = 0;
   if (!parseRelayNum(relay_num, &coil_addr)) {
     std::cout << "[io_relay] ❌ 路数错误，仅支持1-16路\n";
-    return;
+    return false;
   }
   if (!(status == "on" || status == "off")) {
     std::cout << "[io_relay] ❌ status 仅支持 on/off\n";
-    return;
+    return false;
   }
 
   const uint16_t value = (status == "on") ? 0xFF00 : 0x0000;
   bool ok = false;
   const std::vector<uint8_t> packet =
       createModbusPacket(0x05, coil_addr, value, 0, module_slave_id_, &ok);
-  if (!ok) return;
+  if (!ok) return false;
 
   std::vector<uint8_t> response;
-  if (!sendModbusPacket(packet, &response, "继电器控制")) return;
+  if (!sendModbusPacket(packet, &response, "继电器控制")) return false;
 
   if (response == packet) {
     std::cout << "[io_relay] ✅ 第" << relay_num << "路继电器已" << (status == "on" ? "吸合" : "断开") << "\n";
+    return true;
   } else {
     std::cout << "[io_relay] ⚠️ 模块应答异常，响应长度=" << response.size() << "\n";
+    return false;
   }
 }
 
-void IoRelayCore::readRelayStatus(int relay_num) {
+bool IoRelayCore::readRelayStatus(int relay_num) {
   bool ok = false;
   std::vector<uint8_t> packet;
 
@@ -230,37 +232,37 @@ void IoRelayCore::readRelayStatus(int relay_num) {
     uint16_t addr = 0;
     if (!parseRelayNum(relay_num, &addr)) {
       std::cout << "[io_relay] ❌ 路数错误，仅支持1-16路\n";
-      return;
+      return false;
     }
     packet = createModbusPacket(0x01, addr, 0, 1, module_slave_id_, &ok);
   } else {
     packet = createModbusPacket(0x01, 0x0000, 0, 16, module_slave_id_, &ok);
   }
-  if (!ok) return;
+  if (!ok) return false;
 
   std::vector<uint8_t> response;
-  if (!sendModbusPacket(packet, &response, "继电器状态读取")) return;
+  if (!sendModbusPacket(packet, &response, "继电器状态读取")) return false;
 
   if (response.size() < 10) {
     std::cout << "[io_relay] ❌ 继电器状态响应长度异常\n";
-    return;
+    return false;
   }
   if (response[7] != 0x01) {
     std::cout << "[io_relay] ❌ 继电器读取功能码异常: 0x" << std::hex << static_cast<int>(response[7])
               << std::dec << "\n";
-    return;
+    return false;
   }
 
   const uint8_t byte_count = response[8];
   if (response.size() < static_cast<size_t>(9 + byte_count)) {
     std::cout << "[io_relay] ❌ 继电器状态数据长度异常\n";
-    return;
+    return false;
   }
 
   if (relay_num > 0) {
     const bool on = (response[9] & 0x01) != 0;
     std::cout << "[io_relay] 📌 第" << relay_num << "路继电器状态：" << (on ? "吸合" : "断开") << "\n";
-    return;
+    return true;
   }
 
   std::cout << "\n[io_relay] 📌 所有继电器状态：\n";
@@ -270,6 +272,7 @@ void IoRelayCore::readRelayStatus(int relay_num) {
     const bool on = ((response[9 + byte_idx] >> bit_idx) & 0x1) != 0;
     std::cout << "  第" << i << "路：" << (on ? "吸合" : "断开") << "\n";
   }
+  return true;
 }
 
 }  // namespace io_relay
