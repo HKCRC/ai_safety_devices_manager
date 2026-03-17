@@ -1508,7 +1508,8 @@ Status Interface::init() {
     lidar->on_log.connect([](const std::string&) {});  // 静默，避免轮询刷屏
     lidar->on_frame.connect([this, id, cfg](const spd_lidar::SpdLidarFrame& frame) {
       const double distance_m = static_cast<double>(frame.data) / 1000.0;
-      if (frame.valid_header && frame.checksum_ok) {
+      const bool lidar_value_valid = (frame.data != 65535u);
+      if (frame.valid_header && frame.checksum_ok && lidar_value_valid) {
         trolley_lidar_has_valid_frame_.store(true, std::memory_order_relaxed);
         constexpr double kPi = 3.14159265358979323846;
         const double angle_rad = cfg.vertical_angle_to_vertical_deg * kPi / 180.0;

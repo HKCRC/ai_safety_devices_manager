@@ -209,6 +209,17 @@ bool BatteryCore::readSummary(Summary* out, double timeout_sec) {
     }
   }
   if (charge_time_debug_enabled_) {
+    bool has_charge_mode = false;
+    std::uint16_t charge_mode = 0u;
+    std::vector<uint8_t> charge_mode_resp;
+    if (sendBatteryRead(0x03, 0x0009, 1, battery_slave_id_, &charge_mode_resp, timeout_sec)) {
+      std::vector<uint16_t> charge_mode_values;
+      if (parseRegisterResponse(charge_mode_resp, 0x03, 1, &charge_mode_values) &&
+          !charge_mode_values.empty()) {
+        has_charge_mode = true;
+        charge_mode = charge_mode_values[0];
+      }
+    }
     std::cout << "[battery] [charge_time_debug] raw=" << charge_time_raw
               << " valid_raw=" << (has_valid_charge_time_raw ? "true" : "false")
               << " estimate=" << estimate_charge_min
@@ -218,6 +229,7 @@ bool BatteryCore::readSummary(Summary* out, double timeout_sec) {
               << " soc=" << s.soc_percent
               << " q_rem_ah=" << q_rem_ah
               << " q_full_ah=" << q_full_ah
+              << " reg0009=" << (has_charge_mode ? std::to_string(charge_mode) : "n/a")
               << " charge_mos=" << (has_charge_mos ? std::to_string(charge_mos) : "n/a")
               << "\n";
   }
