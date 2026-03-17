@@ -23,6 +23,7 @@ class MultiTurnEncoderCore {
     double duration;
     double turns_raw;
     double turns_filtered;
+    double turns_calibrated;
     double velocity;
   };
 
@@ -40,12 +41,16 @@ class MultiTurnEncoderCore {
   void stop();
   bool isConnected() const;
   bool isRunning() const;
+  void setLinearTransform(bool enable, double k, double b);
   LatestData getLatest() const;
 
  private:
   std::unique_ptr<MultiTurnEncoderRTU> encoder_;
   mutable std::mutex mutex_;
   bool running_;
+  bool linear_enable_;
+  double linear_k_;
+  double linear_b_;
   Transport transport_;
 };
 

@@ -1,8 +1,10 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace hoist_hook {
@@ -51,6 +53,12 @@ class HoistHookCore {
   void queryHookInfo(const std::string& info_type);
   void controlSpeaker(const std::string& mode, bool quiet = false);
   void controlWarningLight(const std::string& status);
+  void configureHeartbeat(bool enable, int period_ms, std::uint16_t start_value, bool log_enabled);
+  void startHeartbeat();
+  void stopHeartbeat();
+  void configureTimeSync(bool enable, int period_ms, bool log_enabled);
+  void startTimeSync();
+  void stopTimeSync();
   void genericRead(uint16_t address, uint16_t quantity, int function_code);
   /** skip_confirm=true 用于喇叭/灯/音量等交互控制；quiet=true 不打印写入成功，用于轮播时避免刷屏 */
   void genericWrite(uint16_t address, uint16_t value, int function_code, bool skip_confirm = false, bool quiet = false);
@@ -117,6 +125,9 @@ class HoistHookCore {
   void queryHeartbeat();
   void queryWorkMode();
   void syncWarningLightWithSpeaker(bool quiet);
+  void heartbeatLoop();
+  void timeSyncLoop();
+  bool tryWriteTimeSyncNoPreempt(std::uint16_t value);
 
   const Transport transport_;
   const std::string module_ip_;
@@ -132,6 +143,17 @@ class HoistHookCore {
   int socket_fd_;
   int serial_fd_;
   RetryPolicy retry_policy_;
+  bool heartbeat_enabled_;
+  int heartbeat_period_ms_;
+  bool heartbeat_log_enabled_;
+  std::atomic<std::uint16_t> heartbeat_counter_;
+  std::atomic<bool> heartbeat_running_;
+  std::thread heartbeat_thread_;
+  bool time_sync_enabled_;
+  int time_sync_period_ms_;
+  bool time_sync_log_enabled_;
+  std::atomic<bool> time_sync_running_;
+  std::thread time_sync_thread_;
   bool print_enabled_;
   std::mutex socket_mutex_;
   std::vector<RegisterGroup> register_groups_;

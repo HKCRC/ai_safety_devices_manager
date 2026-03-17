@@ -358,9 +358,9 @@ void Interface::setCraneState(const CraneState& data) {
   latest_crane_state_ = data;
 }
 
-void Interface::updateCraneStateFromEncoder(double turns_filtered) {
-  // Normalized value placeholder: current integration maps filtered turns 1:1 to meters.
-  const double normalized_m = std::max(0.0, turns_filtered);
+void Interface::updateCraneStateFromEncoder(double turns_value) {
+  // Normalized value placeholder: current integration maps encoder turns 1:1 to meters.
+  const double normalized_m = std::max(0.0, turns_value);
   CraneState crane = getCraneState();
   crane.hookToTrolleyDistanceM = static_cast<float>(normalized_m);
   setCraneState(crane);
@@ -658,6 +658,41 @@ void Interface::applyHoistHookDefaultsFromJson(const std::string& json_text) {
   if (extractIntValue(body, "hook_slave_id", &hook_slave_id)) hoist_hook_defaults_.hook_slave_id = hook_slave_id;
   int power_slave_id = 0;
   if (extractIntValue(body, "power_slave_id", &power_slave_id)) hoist_hook_defaults_.power_slave_id = power_slave_id;
+  bool heartbeat_enable = false;
+  if (extractBoolValue(body, "heartbeat_enable", &heartbeat_enable)) {
+    hoist_hook_defaults_.heartbeat_enable = heartbeat_enable;
+  }
+  int heartbeat_period_ms = 0;
+  if (extractIntValue(body, "heartbeat_period_ms", &heartbeat_period_ms) && heartbeat_period_ms > 0) {
+    hoist_hook_defaults_.heartbeat_period_ms = heartbeat_period_ms;
+  }
+  int heartbeat_start_value = 0;
+  if (extractIntValue(body, "heartbeat_start_value", &heartbeat_start_value) &&
+      heartbeat_start_value >= 0 && heartbeat_start_value <= 65535) {
+    hoist_hook_defaults_.heartbeat_start_value = heartbeat_start_value;
+  }
+  bool heartbeat_log_enabled = false;
+  if (extractBoolValue(body, "heartbeat_log_enabled", &heartbeat_log_enabled)) {
+    hoist_hook_defaults_.heartbeat_log_enabled = heartbeat_log_enabled;
+  }
+  bool time_sync_enable = false;
+  if (extractBoolValue(body, "time_sync_enable", &time_sync_enable)) {
+    hoist_hook_defaults_.time_sync_enable = time_sync_enable;
+  }
+  int time_sync_period_ms = 0;
+  if (extractIntValue(body, "time_sync_period_ms", &time_sync_period_ms) && time_sync_period_ms > 0) {
+    hoist_hook_defaults_.time_sync_period_ms = time_sync_period_ms;
+  }
+  bool time_sync_log_enabled = false;
+  if (extractBoolValue(body, "time_sync_log_enabled", &time_sync_log_enabled)) {
+    hoist_hook_defaults_.time_sync_log_enabled = time_sync_log_enabled;
+  }
+  int speaker_volume = -1;
+  if (extractIntValue(body, "speaker_volume", &speaker_volume)) {
+    if (speaker_volume >= 0 && speaker_volume <= 30) {
+      hoist_hook_defaults_.speaker_volume = speaker_volume;
+    }
+  }
   double query_hz = 0.0;
   if (extractDoubleValue(body, "query_hz", &query_hz)) hoist_hook_defaults_.query_hz = query_hz;
   int both_speaker_play_window_ms = 0;
@@ -722,6 +757,12 @@ void Interface::applyEncoderDefaultsFromJson(const std::string& json_text) {
   if (extractStringValue(body, "ip", &ip)) encoder_defaults_.ip = ip;
   int port = 0;
   if (extractIntValue(body, "port", &port)) encoder_defaults_.port = port;
+  bool linear_enable = false;
+  if (extractBoolValue(body, "linear_enable", &linear_enable)) encoder_defaults_.linear_enable = linear_enable;
+  double linear_k = 0.0;
+  if (extractDoubleValue(body, "linear_k", &linear_k)) encoder_defaults_.linear_k = linear_k;
+  double linear_b = 0.0;
+  if (extractDoubleValue(body, "linear_b", &linear_b)) encoder_defaults_.linear_b = linear_b;
   double query_hz = 0.0;
   if (extractDoubleValue(body, "query_hz", &query_hz)) encoder_defaults_.query_hz = query_hz;
 }
@@ -861,8 +902,16 @@ void Interface::buildDriverAdapters() {
     drivers_["hoist_hook"] = std::make_unique<FunctionDriverAdapter>(
         "hoist_hook",
         []() { return Status{true, "ok"}; },
-        []() { return Status{true, "hoist_hook is request-response driver"}; },
-        []() { return Status{true, "hoist_hook is request-response driver"}; },
+        [this]() {
+          hoist_hook_->startHeartbeat();
+          hoist_hook_->startTimeSync();
+          return Status{true, "hoist_hook started"};
+        },
+        [this]() {
+          hoist_hook_->stopHeartbeat();
+          hoist_hook_->stopTimeSync();
+          return Status{true, "hoist_hook stopped"};
+        },
         [this](const std::vector<std::string>& args) { return queryHoistHook(args); },
         []() {
           return std::vector<std::string>{"map",
@@ -1130,7 +1179,7 @@ void Interface::updateTrolleyStateFromDrivers() {
         multi_turn_encoder_->getLatest();
     encoder_ok = latest.valid && latest.connected;
     if (encoder_ok) {
-      updateCraneStateFromEncoder(latest.turns_filtered);
+      updateCraneStateFromEncoder(latest.turns_calibrated);
     }
   }
 #endif
@@ -1259,7 +1308,10 @@ Status Interface::start() {
 #endif
 #ifdef ASC_ENABLE_MULTI_TURN_ENCODER
     std::cout << "  - multi_turn_encoder: enabled=" << (multi_turn_encoder_ ? "true" : "false")
-              << ", query_hz=" << encoder_defaults_.query_hz << "\n";
+              << ", query_hz=" << encoder_defaults_.query_hz
+              << ", linear_enable=" << (encoder_defaults_.linear_enable ? "true" : "false")
+              << ", linear_k=" << encoder_defaults_.linear_k
+              << ", linear_b=" << encoder_defaults_.linear_b << "\n";
 #endif
 #ifdef ASC_ENABLE_SPD_LIDAR
     size_t lidar_enabled_count = 0;
@@ -1357,6 +1409,25 @@ Status Interface::init() {
               hoist_hook_defaults_.retry_policy.jitter_ms,
               hoist_hook_defaults_.retry_policy.log_enabled});
     }
+    if (hoist_hook_ && hoist_hook_defaults_.speaker_volume >= 0 &&
+        hoist_hook_defaults_.speaker_volume <= 30) {
+      // Apply startup speaker volume from config on module instantiation.
+      hoist_hook_->genericWrite(static_cast<uint16_t>(0x0067),
+                                static_cast<uint16_t>(hoist_hook_defaults_.speaker_volume),
+                                0x06,
+                                true);
+    }
+    if (hoist_hook_) {
+      hoist_hook_->configureHeartbeat(
+          hoist_hook_defaults_.heartbeat_enable,
+          hoist_hook_defaults_.heartbeat_period_ms,
+          static_cast<std::uint16_t>(hoist_hook_defaults_.heartbeat_start_value),
+          hoist_hook_defaults_.heartbeat_log_enabled);
+      hoist_hook_->configureTimeSync(
+          hoist_hook_defaults_.time_sync_enable,
+          hoist_hook_defaults_.time_sync_period_ms,
+          hoist_hook_defaults_.time_sync_log_enabled);
+    }
   }
 #endif
 #ifdef ASC_ENABLE_IO_RELAY
@@ -1397,6 +1468,10 @@ Status Interface::init() {
           encoder_defaults_.data_bit,
           encoder_defaults_.stop_bit,
           encoder_defaults_.slave);
+    }
+    if (multi_turn_encoder_) {
+      multi_turn_encoder_->setLinearTransform(
+          encoder_defaults_.linear_enable, encoder_defaults_.linear_k, encoder_defaults_.linear_b);
     }
   }
 #endif
@@ -1718,6 +1793,7 @@ Status Interface::queryMultiTurnEncoder(const std::vector<std::string>& args) {
               << " ts_local=\"" << formatEpochSeconds(data.timestamp) << "\""
               << " turns_raw=" << data.turns_raw
               << " turns_filtered=" << data.turns_filtered
+              << " turns_calibrated=" << data.turns_calibrated
               << " velocity=" << data.velocity << "\n";
     return Status{true, "ok"};
   }

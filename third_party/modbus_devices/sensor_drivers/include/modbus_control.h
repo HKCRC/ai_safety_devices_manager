@@ -58,6 +58,7 @@ private:
     std::string ip_address_;
     int port_;
     int slave_address_;
+    std::string rtu_device_;
     bool disable_cerr = false;
 };
 

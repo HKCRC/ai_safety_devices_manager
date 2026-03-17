@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -90,6 +91,15 @@ HoistHookCore::HoistHookCore(const std::string& module_ip,
       socket_fd_(-1),
       serial_fd_(-1),
       retry_policy_(retry_policy),
+      heartbeat_enabled_(false),
+      heartbeat_period_ms_(1000),
+      heartbeat_log_enabled_(false),
+      heartbeat_counter_(0),
+      heartbeat_running_(false),
+      time_sync_enabled_(false),
+      time_sync_period_ms_(5000),
+      time_sync_log_enabled_(false),
+      time_sync_running_(false),
       print_enabled_(true),
       register_groups_({
           {0x0000, 0x0063, "读/写混合", "指令寄存器（0~99）"},
@@ -127,6 +137,15 @@ HoistHookCore::HoistHookCore(const std::string& device,
       socket_fd_(-1),
       serial_fd_(-1),
       retry_policy_(retry_policy),
+      heartbeat_enabled_(false),
+      heartbeat_period_ms_(1000),
+      heartbeat_log_enabled_(false),
+      heartbeat_counter_(0),
+      heartbeat_running_(false),
+      time_sync_enabled_(false),
+      time_sync_period_ms_(5000),
+      time_sync_log_enabled_(false),
+      time_sync_running_(false),
       print_enabled_(true),
       register_groups_({
           {0x0000, 0x0063, "读/写混合", "指令寄存器（0~99）"},
@@ -134,8 +153,111 @@ HoistHookCore::HoistHookCore(const std::string& device,
       }) {}
 
 HoistHookCore::~HoistHookCore() {
+  stopHeartbeat();
+  stopTimeSync();
   std::lock_guard<std::mutex> lock(socket_mutex_);
   disconnectLocked();
+}
+
+void HoistHookCore::configureHeartbeat(bool enable,
+                                       int period_ms,
+                                       std::uint16_t start_value,
+                                       bool log_enabled) {
+  heartbeat_enabled_ = enable;
+  heartbeat_period_ms_ = std::max(50, period_ms);
+  heartbeat_log_enabled_ = log_enabled;
+  heartbeat_counter_.store(start_value, std::memory_order_relaxed);
+}
+
+void HoistHookCore::startHeartbeat() {
+  if (!heartbeat_enabled_) return;
+  if (heartbeat_running_.load(std::memory_order_relaxed)) return;
+  heartbeat_running_.store(true, std::memory_order_relaxed);
+  heartbeat_thread_ = std::thread([this]() { heartbeatLoop(); });
+}
+
+void HoistHookCore::stopHeartbeat() {
+  heartbeat_running_.store(false, std::memory_order_relaxed);
+  if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
+}
+
+void HoistHookCore::configureTimeSync(bool enable, int period_ms, bool log_enabled) {
+  time_sync_enabled_ = enable;
+  time_sync_period_ms_ = std::max(50, period_ms);
+  time_sync_log_enabled_ = log_enabled;
+}
+
+void HoistHookCore::startTimeSync() {
+  if (!time_sync_enabled_) return;
+  if (time_sync_running_.load(std::memory_order_relaxed)) return;
+  time_sync_running_.store(true, std::memory_order_relaxed);
+  time_sync_thread_ = std::thread([this]() { timeSyncLoop(); });
+}
+
+void HoistHookCore::stopTimeSync() {
+  time_sync_running_.store(false, std::memory_order_relaxed);
+  if (time_sync_thread_.joinable()) time_sync_thread_.join();
+}
+
+void HoistHookCore::heartbeatLoop() {
+  while (heartbeat_running_.load(std::memory_order_relaxed)) {
+    const std::uint16_t value = heartbeat_counter_.load(std::memory_order_relaxed);
+    genericWrite(static_cast<uint16_t>(0x0068), value, 0x06, true, true);
+    if (heartbeat_log_enabled_) {
+      std::cout << "[hoist_hook] 🫀 心跳写入 reg104=" << value << "\n";
+    }
+    heartbeat_counter_.store(static_cast<std::uint16_t>(value + 1), std::memory_order_relaxed);
+    std::this_thread::sleep_for(std::chrono::milliseconds(heartbeat_period_ms_));
+  }
+}
+
+void HoistHookCore::timeSyncLoop() {
+  while (time_sync_running_.load(std::memory_order_relaxed)) {
+    const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm local_tm{};
+    localtime_r(&now, &local_tm);
+    const std::uint16_t value = static_cast<std::uint16_t>(
+        ((static_cast<std::uint16_t>(local_tm.tm_hour) & 0x00FFu) << 8) |
+        (static_cast<std::uint16_t>(local_tm.tm_min) & 0x00FFu));
+    const bool wrote = tryWriteTimeSyncNoPreempt(value);
+    if (time_sync_log_enabled_) {
+      if (wrote) {
+        std::cout << "[hoist_hook] 🕒 时间同步写入 reg116=0x"
+                  << std::hex << std::uppercase << std::setw(4) << std::setfill('0') << value
+                  << std::dec << " (" << local_tm.tm_hour << ":" << std::setw(2)
+                  << std::setfill('0') << local_tm.tm_min << ")\n";
+      } else {
+        std::cout << "[hoist_hook] 🕒 时间同步跳过：总线忙，未抢占业务\n";
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(time_sync_period_ms_));
+  }
+}
+
+bool HoistHookCore::tryWriteTimeSyncNoPreempt(std::uint16_t value) {
+  bool packet_ok = false;
+  const std::vector<uint8_t> packet = createModbusPacket(
+      static_cast<uint8_t>(0x06),
+      static_cast<uint16_t>(0x0074),
+      value,
+      0,
+      hook_slave_id_,
+      &packet_ok);
+  if (!packet_ok) return false;
+
+  // Non-preemptive rule: if the bus lock is busy, skip this cycle immediately.
+  std::unique_lock<std::mutex> lock(socket_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) return false;
+
+  std::vector<uint8_t> response;
+  if (!ensureConnectionLocked(5.0)) {
+    disconnectLocked();
+    return false;
+  }
+  const bool ok = sendAndReceiveLocked(packet, &response, "时间同步写寄存器(非抢占)");
+  disconnectLocked();
+  if (!ok) return false;
+  return response == packet;
 }
 
 bool HoistHookCore::parseNumber(const std::string& text, int* out) {

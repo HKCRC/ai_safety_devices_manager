@@ -10,6 +10,7 @@
 
 
 ModbusControl::ModbusControl(const char* device, int baud, char parity, int data_bit, int stop_bit, int slave) {
+    rtu_device_ = device ? device : "";
     ctx = modbus_new_rtu(device, baud, parity, data_bit, stop_bit);
     // ctx->debug = true;
     modbus_set_slave(ctx, slave);
@@ -18,6 +19,7 @@ ModbusControl::ModbusControl(const char* device, int baud, char parity, int data
 }
 
 ModbusControl::ModbusControl(const char* device, int baud, char parity, int data_bit, int stop_bit, int slave, uint32_t to_sec, uint32_t to_usec) {
+    rtu_device_ = device ? device : "";
     ctx = modbus_new_rtu(device, baud, parity, data_bit, stop_bit);
     modbus_set_slave(ctx, slave);
     setupRTUFunctions();
@@ -311,10 +313,11 @@ void ModbusControl::handleError(const char* context) {
     connected = false;
     int error_code = errno;
     if (disable_cerr) return;
-    std::cerr << "Error: " << context 
-              << " - System errno: " << error_code
+    std::cerr << "Error: " << context;
+    if (!rtu_device_.empty()) std::cerr << " (device: " << rtu_device_ << ")";
+    std::cerr << " - System errno: " << error_code
               << " (" << strerror(error_code) << ")"
-              << " - Modbus error: " << modbus_strerror(error_code) 
+              << " - Modbus error: " << modbus_strerror(error_code)
               << std::endl;
 }
 

@@ -103,6 +103,14 @@ class Interface {
     int stop_bit = 1;
     int hook_slave_id = 3;
     int power_slave_id = 4;
+    bool heartbeat_enable = false;
+    int heartbeat_period_ms = 1000;
+    int heartbeat_start_value = 0;
+    bool heartbeat_log_enabled = false;
+    bool time_sync_enable = false;
+    int time_sync_period_ms = 5000;
+    bool time_sync_log_enabled = false;
+    int speaker_volume = -1;  // 0~30; -1 means keep device default.
     double query_hz = 0.0;
     int both_speaker_play_window_ms = 5000;
     int both_speaker_switch_gap_ms = 200;
@@ -120,6 +128,9 @@ class Interface {
     int slave = 1;
     std::string ip = "192.168.1.100";
     int port = 502;
+    bool linear_enable = false;
+    double linear_k = 1.0;
+    double linear_b = 0.0;
     double query_hz = 0.0;
   };
 
@@ -215,7 +226,7 @@ class Interface {
   void updateTrolleyStateFromDrivers();
   void updateHookStateFromDriver();
   void setCraneState(const CraneState& data);
-  void updateCraneStateFromEncoder(double turns_filtered);
+  void updateCraneStateFromEncoder(double turns_value);
   void updateCraneStateFromLidarMeasurement(const std::string& id,
                                             std::uint16_t raw_mm,
                                             double projected_distance_m);

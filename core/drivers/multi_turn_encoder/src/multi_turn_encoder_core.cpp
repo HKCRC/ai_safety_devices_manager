@@ -12,11 +12,17 @@ MultiTurnEncoderCore::MultiTurnEncoderCore(const std::string& device,
                                            int slave)
     : encoder_(new MultiTurnEncoderRTU(device.c_str(), baud, parity, data_bit, stop_bit, slave)),
       running_(false),
+      linear_enable_(false),
+      linear_k_(1.0),
+      linear_b_(0.0),
       transport_(Transport::RTU) {}
 
 MultiTurnEncoderCore::MultiTurnEncoderCore(const std::string& ip, int port, int slave)
     : encoder_(new MultiTurnEncoderRTU(ip.c_str(), port, slave)),
       running_(false),
+      linear_enable_(false),
+      linear_k_(1.0),
+      linear_b_(0.0),
       transport_(Transport::TCP) {}
 
 MultiTurnEncoderCore::~MultiTurnEncoderCore() {
@@ -55,6 +61,13 @@ bool MultiTurnEncoderCore::isRunning() const {
   return running_;
 }
 
+void MultiTurnEncoderCore::setLinearTransform(bool enable, double k, double b) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  linear_enable_ = enable;
+  linear_k_ = k;
+  linear_b_ = b;
+}
+
 MultiTurnEncoderCore::LatestData MultiTurnEncoderCore::getLatest() const {
   LatestData out{};
   out.valid = false;
@@ -69,6 +82,16 @@ MultiTurnEncoderCore::LatestData MultiTurnEncoderCore::getLatest() const {
   out.duration = raw.time_variance;
   out.turns_raw = raw.value;
   out.turns_filtered = enc.value;
+  bool linear_enable = false;
+  double linear_k = 1.0;
+  double linear_b = 0.0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    linear_enable = linear_enable_;
+    linear_k = linear_k_;
+    linear_b = linear_b_;
+  }
+  out.turns_calibrated = linear_enable ? (linear_k * out.turns_raw + linear_b) : out.turns_raw;
   out.velocity = enc.velocity;
 
   // A sample is considered valid after timestamp is populated by read loop.
