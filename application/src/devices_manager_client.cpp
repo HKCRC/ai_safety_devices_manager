@@ -129,16 +129,12 @@ void DevicesManagerClient::applySpeakerControlByAlert(const ai_safety_common::Al
   }
 }
 
-void DevicesManagerClient::applyBatteryButtonControl(std::uint8_t raw_cmd) {
+void DevicesManagerClient::applyBatteryButtonControl(std::uint8_t raw_cmd, bool force_send) {
   if (!impl_) return;
   if (raw_cmd > static_cast<std::uint8_t>(PowerCommand::PowerOff)) return;
 
   const PowerCommand cmd = static_cast<PowerCommand>(raw_cmd);
-  if (cmd == PowerCommand::None) {
-    last_battery_button_cmd_.reset();
-    return;
-  }
-  if (last_battery_button_cmd_.has_value() && last_battery_button_cmd_.value() == cmd) return;
+  if (cmd == PowerCommand::None) return;
 
   if (battery_button_relay_channels_.empty()) return;
 
@@ -156,6 +152,60 @@ void DevicesManagerClient::applyBatteryButtonControl(std::uint8_t raw_cmd) {
   }
 }
 
+void DevicesManagerClient::restoreBatteryButtonPowerStateFromRelays(bool log_output) {
+  if (!impl_ || battery_button_relay_channels_.empty()) return;
+#ifdef ASC_ENABLE_IO_RELAY
+  io_relay::IoRelayCore* relay = impl_->ioRelay();
+  if (!relay) return;
+
+  bool any_on = false;
+  bool any_off = false;
+  for (size_t i = 0; i < battery_button_relay_channels_.size(); ++i) {
+    bool on = false;
+    const int ch = battery_button_relay_channels_[i];
+    if (!relay->getRelayState(ch, &on)) {
+      if (log_output) {
+        std::cout << "[startup] restore power state skipped: failed to read io_relay channel " << ch << "\n";
+      }
+      return;
+    }
+    any_on = any_on || on;
+    any_off = any_off || !on;
+  }
+
+  PowerCommand restored_cmd = PowerCommand::None;
+  if (any_on) {
+    restored_cmd = PowerCommand::PowerOn;
+    if (log_output) {
+      if (any_off) {
+        std::cout << "[startup] restore power state: at least one relay channel is on\n";
+      } else {
+        std::cout << "[startup] restore power state: relays are on\n";
+      }
+    }
+  } else {
+    restored_cmd = PowerCommand::PowerOff;
+    if (log_output) {
+      std::cout << "[startup] restore power state: relays are off\n";
+    }
+  }
+
+  const PowerCommand previous_cmd = impl_->getPowerCommand();
+  impl_->setPowerCommand(restored_cmd);
+  if (restored_cmd == PowerCommand::PowerOn || restored_cmd == PowerCommand::PowerOff) {
+    last_battery_button_cmd_ = restored_cmd;
+  } else {
+    last_battery_button_cmd_.reset();
+  }
+  if (!log_output && previous_cmd != restored_cmd) {
+    std::cout << "[runtime] sync power state from relays: "
+              << (restored_cmd == PowerCommand::PowerOn ? "on" : "off") << "\n";
+  }
+#else
+  impl_->setPowerCommand(PowerCommand::None);
+#endif
+}
+
 void DevicesManagerClient::notifyThreadFunc() {
   while (!notify_stop_) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -169,9 +219,22 @@ void DevicesManagerClient::notifyThreadFunc() {
       if (!SignalGetBatteryButtonSignals.empty()) {
         std::uint8_t raw_cmd = 0;
         SignalGetBatteryButtonSignals(raw_cmd);
-        applyBatteryButtonControl(raw_cmd);
+        if (raw_cmd <= static_cast<std::uint8_t>(PowerCommand::PowerOff)) {
+          const PowerCommand cmd = static_cast<PowerCommand>(raw_cmd);
+          if (cmd == PowerCommand::None) {
+            last_received_battery_button_cmd_.reset();
+          } else if (!last_received_battery_button_cmd_.has_value() ||
+                     last_received_battery_button_cmd_.value() != cmd) {
+            last_received_battery_button_cmd_ = cmd;
+            applyBatteryButtonControl(raw_cmd);
+          }
+        }
       }
       const auto now = std::chrono::steady_clock::now();
+      if (now >= next_relay_state_sync_ts_) {
+        restoreBatteryButtonPowerStateFromRelays(false);
+        next_relay_state_sync_ts_ = now + relay_state_sync_interval_;
+      }
       if (now - last_push_ts_ >= std::chrono::seconds(1)) {
         SignalSendDeviceStatus(getDeviceStatus());
         SignalSendCraneState(getCraneState());
@@ -218,8 +281,10 @@ Status DevicesManagerClient::start() {
       std::unique(battery_button_relay_channels_.begin(), battery_button_relay_channels_.end()),
       battery_button_relay_channels_.end());
   last_battery_button_cmd_.reset();
-  impl_->setPowerCommand(PowerCommand::None);
+  last_received_battery_button_cmd_.reset();
+  restoreBatteryButtonPowerStateFromRelays();
   last_push_ts_ = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+  next_relay_state_sync_ts_ = std::chrono::steady_clock::now() + relay_state_sync_interval_;
   notify_stop_ = false;
   notify_thread_ = std::thread(&DevicesManagerClient::notifyThreadFunc, this);
   return s;

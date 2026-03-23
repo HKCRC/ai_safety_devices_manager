@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -29,8 +30,10 @@ class IoRelayCore {
 
   bool controlRelay(int relay_num, const std::string& status);
   bool readRelayStatus(int relay_num);  // relay_num <= 0 means read all
+  bool getRelayState(int relay_num, bool* on);
 
  private:
+  void waitForStartupStableWindow();
   std::vector<uint8_t> createModbusPacket(uint8_t function_code,
                                           uint16_t address,
                                           uint16_t value,
@@ -46,6 +49,11 @@ class IoRelayCore {
   bool sendAndReceiveLocked(const std::vector<uint8_t>& packet,
                             std::vector<uint8_t>* response,
                             const std::string& context);
+  bool parseReadCoilsResponse(const std::vector<uint8_t>& response,
+                              int expected_count,
+                              std::vector<bool>* states);
+  bool readRelayStates(int relay_num, std::vector<bool>* states);
+  bool readSingleRelayState(int relay_num, bool* on);
   bool parseRelayNum(int relay_num, uint16_t* coil_addr) const;
 
   const std::string module_ip_;
@@ -55,6 +63,7 @@ class IoRelayCore {
   int socket_fd_;
   RetryPolicy retry_policy_;
   std::mutex socket_mutex_;
+  std::chrono::steady_clock::time_point startup_stable_after_;
 };
 
 }  // namespace io_relay

@@ -12,6 +12,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef ASC_ENABLE_BATTERY
@@ -313,6 +314,8 @@ class Interface {
 #endif
 #ifdef ASC_ENABLE_SPD_LIDAR
   std::unordered_map<std::string, std::unique_ptr<spd_lidar::SpdLidarCore>> spd_lidar_instances_core_;
+  std::unordered_set<std::string> spd_lidar_wait_logged_;
+  mutable std::mutex spd_lidar_log_mutex_;
 #endif
 
 #ifdef ASC_ENABLE_SPD_LIDAR

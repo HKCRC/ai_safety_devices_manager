@@ -1,75 +1,75 @@
 {
- "version": {    "major": 0,    "minor": 1,
-    "patch": 0
-  },
-  "build": {
-    "ENABLE_BATTERY": true,
-    "ENABLE_HOIST_HOOK": true,
-    "ENABLE_IO_RELAY": true,
-    "ENABLE_MULTI_TURN_ENCODER": true,
-    "ENABLE_SOLAR": true,
-    "ENABLE_SPD_LIDAR": true
-  },
-  "runtime": {
-    "battery": {
-      "enable": true,
-      "module_ip": "192.168.61.89",
-      "module_port": 502,
-      "module_slave_id": 3,
-      "battery_slave_id": 2,
-      "charge_time_debug": false,
-      "query_hz": 1.0,
-      "retry": {
-        "max_retries": 2,
-        "base_backoff_ms": 100,
-        "max_backoff_ms": 500,
-        "jitter_ms": 50,
-        "log_enabled": false
-      }
-    },
-    "solar": {
-      "enable": true,
-      "module_ip": "192.168.61.89",
-      "module_port": 502,
-      "module_slave_id": 3,
-      "solar_slave_id": 4,
-      "sample_timeout_sec": 1.5,
-      "stale_timeout_ms": 2500,
-      "query_hz": 1.0,
-      "retry": {
-        "max_retries": 2,
-        "base_backoff_ms": 100,
-        "max_backoff_ms": 500,
-        "jitter_ms": 50,
-        "log_enabled": false
-      }
-    },
-    "io_relay": {
-      "enable": true,
-      "module_ip": "192.168.61.89",
-      "module_port": 502,
-      "module_slave_id": 3,
-      "battery_button_relay_channels": [1],
-      "query_hz": 1.0,
-      "retry": {
-        "max_retries": 2,
-        "base_backoff_ms": 100,
-        "max_backoff_ms": 500,
-        "jitter_ms": 50,
-        "log_enabled": false
-      }
-    },
-    "hoist_hook": {
-      "_comment": "transport=rtu 直连串口 Modbus RTU（9600 8N1）；transport=tcp 使用 module_ip/module_port",
-      "enable": false,
-      "transport": "rtu",
-      "device": "/tmp/ttyHOIST0",
-      "_device_comment": "RTU 模拟器 hoist_hook_rtu_sim.py 会在此路径创建虚拟串口，/tmp 无需 root 权限",
-      "baud": 9600,
-      "parity": "N",
-      "data_bit": 8,
-      "stop_bit": 1,
-      "module_ip": "127.0.0.1",
+  "version": {    "major": 0,    "minor": 1,
+     "patch": 0
+   },
+   "build": {
+     "ENABLE_BATTERY": true,
+     "ENABLE_HOIST_HOOK": true,
+     "ENABLE_IO_RELAY": true,
+     "ENABLE_MULTI_TURN_ENCODER": true,
+     "ENABLE_SOLAR": true,
+     "ENABLE_SPD_LIDAR": true
+   },
+   "runtime": {
+     "battery": {
+       "enable": true,
+       "module_ip": "192.168.61.89",
+       "module_port": 502,
+       "module_slave_id": 3,
+       "battery_slave_id": 2,
+       "charge_time_debug": false,
+       "query_hz": 1.0,
+       "retry": {
+         "max_retries": 2,
+         "base_backoff_ms": 100,
+         "max_backoff_ms": 500,
+         "jitter_ms": 50,
+         "log_enabled": false
+       }
+     },
+     "solar": {
+       "enable": true,
+       "module_ip": "192.168.61.89",
+       "module_port": 502,
+       "module_slave_id": 3,
+       "solar_slave_id": 4,
+       "sample_timeout_sec": 1.5,
+       "stale_timeout_ms": 2500,
+       "query_hz": 1.0,
+       "retry": {
+         "max_retries": 2,
+         "base_backoff_ms": 100,
+         "max_backoff_ms": 500,
+         "jitter_ms": 50,
+         "log_enabled": false
+       }
+     },
+     "io_relay": {
+       "enable": true,
+       "module_ip": "192.168.61.89",
+       "module_port": 502,
+       "module_slave_id": 3,
+       "battery_button_relay_channels": [1,2,5],
+       "query_hz": 1.0,
+       "retry": {
+         "max_retries": 2,
+         "base_backoff_ms": 100,
+         "max_backoff_ms": 500,
+         "jitter_ms": 50,
+         "log_enabled": false
+       }
+     },
+     "hoist_hook": {
+       "_comment": "transport=rtu 直连串口 Modbus RTU（9600 8N1）；transport=tcp 使用 module_ip/module_port",
+       "enable": false,
+       "transport": "rtu",
+       "device": "/dev/ttyACM0",
+       "_device_comment": "RTU 模拟器 hoist_hook_rtu_sim.py 会在此路径创建虚拟串口，/tmp 无需 root 权限",
+       "baud": 9600,
+       "parity": "N",
+       "data_bit": 8,
+       "stop_bit": 1,
+       "module_ip": "127.0.0.1",
       "module_port": 2502,
       "hook_slave_id": 3,
       "power_slave_id": 4,
@@ -94,53 +94,54 @@
         "jitter_ms": 50,
         "log_enabled": false
       }
-    },
-    "multi_turn_encoder": {
-      "_comment": "transport=rtu 使用串口参数；transport=tcp 使用 ip/port 参数",
+     },
+     "multi_turn_encoder": {
+       "_comment": "transport=rtu 使用串口参数；transport=tcp 使用 ip/port 参数",
       "_linear_comment": "线性标定：Y = k*X + b，X为原始圈数(turns_raw)；后续业务使用Y",
-      "enable": false,
-      "transport": "rtu",
-      "device": "/tmp/ttyENC1",
-      "_device_comment": "RTU 模拟器 multi_turn_encoder_rtu_sim.py 会在此路径创建虚拟串口，/tmp 无需 root 权限",
-      "baud": 9600,
-      "parity": "E",
-      "data_bit": 8,
-      "stop_bit": 1,
-      "slave": 1,
-      "ip": "127.0.0.1",
-      "port": 1502,
+       "enable": true,
+       "transport": "rtu",
+       "device": "/dev/ttyUSB0",
+       "_device_comment": "RTU 模拟器 multi_turn_encoder_rtu_sim.py 会在此路径创建虚拟串口，/tmp 无需 root 权限",
+       "baud": 9600,
+       "parity": "E",
+       "data_bit": 8,
+       "stop_bit": 1,
+       "slave": 1,
+       "ip": "127.0.0.1",
+       "port": 1502,
       "linear_enable": true,
       "linear_k": 1.0,
       "linear_b": 0.0,
-      "query_hz": 10.0
-    },
-    "spd_lidar": {
-      "_comment": "多实例配置：mode=server 时监听 local_ip/local_port；mode=client 时从 local_ip/local_port 连接到 device_ip/device_port",
-      "query_hz": 1.0,
-      "instances": [
-        {
-          "id": "front",
-          "enable": true,
-          "mode": "server",
-          "local_ip": "192.168.61.3",
-          "local_port": 12345,
-          "device_ip": "192.168.61.91",
-          "device_port": 8234,
-          "role": "front_obstacle",
-          "vertical_angle_to_vertical_deg": 0.0
-        },
-        {
-          "id": "rear",
-          "enable": true,
-          "mode": "server",
-          "local_ip": "192.168.61.3",
-          "local_port": 12345,
-          "device_ip": "192.168.61.92",
-          "device_port": 20108,
-          "role": "rear_obstacle",
-          "vertical_angle_to_vertical_deg": 0.0
-        }
-      ]
-    }
-  }
-}
+       "query_hz": 10.0
+     },
+     "spd_lidar": {
+       "_comment": "多实例配置：mode=server 时监听 local_ip/local_port；mode=client 时从 local_ip/local_port 连接到 device_ip/device_port",
+       "query_hz": 1.0,
+       "instances": [
+         {
+           "id": "front",
+           "enable": true,
+           "mode": "server",
+           "local_ip": "192.168.61.3",
+           "local_port": 12345,
+           "device_ip": "192.168.61.91",
+           "device_port": 8234,
+           "role": "front_obstacle",
+           "vertical_angle_to_vertical_deg": 0.0
+         },
+         {
+           "id": "rear",
+           "enable": true,
+           "mode": "server",
+           "local_ip": "192.168.61.3",
+           "local_port": 12345,
+           "device_ip": "192.168.61.92",
+           "device_port": 20108,
+           "role": "rear_obstacle",
+           "vertical_angle_to_vertical_deg": 0.0
+         }
+       ]
+     }
+   }
+ }
+ 

@@ -1192,7 +1192,8 @@ void Interface::updateTrolleyStateFromDrivers() {
   }
 #endif
 
-  if (getPowerCommand() == PowerCommand::PowerOff) {
+  const PowerCommand power_cmd = getPowerCommand();
+  if (power_cmd == PowerCommand::PowerOff || power_cmd == PowerCommand::None) {
     data.trolleyState = DeviceStatus::EquipmentState::Standby;
     setDeviceStatus(data);
     return;
@@ -1546,17 +1547,30 @@ Status Interface::init() {
       }
     });
     spd_lidar::SpdLidarCore* lidar_raw = lidar.get();
-    lidar->on_send.connect([cfg, id, lidar_raw](const std::vector<uint8_t>& req) {
+    lidar->on_send.connect([this, cfg, id, lidar_raw](const std::vector<uint8_t>& req) {
       std::vector<uint8_t> resp;
       std::string err;
       if (!spdLidarExchangeTcp(cfg, req, &resp, &err)) {
         if (cfg.mode == "server" && err == "accept timeout") {
-          std::cout << "[spd_lidar:" << id << "] waiting client connection at "
-                    << cfg.local_ip << ":" << cfg.local_port << "\n";
+          bool should_log = false;
+          {
+            std::lock_guard<std::mutex> lock(spd_lidar_log_mutex_);
+            if (spd_lidar_wait_logged_.insert(id).second) {
+              should_log = true;
+            }
+          }
+          if (should_log) {
+            std::cout << "[spd_lidar:" << id << "] waiting client connection at "
+                      << cfg.local_ip << ":" << cfg.local_port << "\n";
+          }
         } else {
           std::cout << "[spd_lidar:" << id << "] net error: " << err << "\n";
         }
         return;
+      }
+      {
+        std::lock_guard<std::mutex> lock(spd_lidar_log_mutex_);
+        spd_lidar_wait_logged_.erase(id);
       }
       if (!resp.empty()) {
         lidar_raw->handleRecvBytes(resp.data(), resp.size());

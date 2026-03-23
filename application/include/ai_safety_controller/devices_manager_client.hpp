@@ -105,7 +105,8 @@ class DevicesManagerClient {
   void notifyThreadFunc();
   void applySpeakerControlByAlert(const ai_safety_common::AlertMessage& alert);
   bool applySpeakerMode(SpeakerMode mode, bool quiet = false);
-  void applyBatteryButtonControl(std::uint8_t raw_cmd);
+  void applyBatteryButtonControl(std::uint8_t raw_cmd, bool force_send = false);
+  void restoreBatteryButtonPowerStateFromRelays(bool log_output = true);
   static const char* toSpeakerCtlArg(SpeakerMode mode);
 
   std::unique_ptr<Interface> impl_;
@@ -118,8 +119,11 @@ class DevicesManagerClient {
   std::chrono::milliseconds both_play_window_{5000};
   std::chrono::milliseconds both_switch_gap_{200};
   std::chrono::steady_clock::time_point last_push_ts_{};
+  std::chrono::steady_clock::time_point next_relay_state_sync_ts_{};
   std::vector<int> battery_button_relay_channels_{};
   std::optional<PowerCommand> last_battery_button_cmd_;
+  std::optional<PowerCommand> last_received_battery_button_cmd_;
+  std::chrono::milliseconds relay_state_sync_interval_{1000};
   std::atomic<bool> notify_stop_{false};
   std::thread notify_thread_;
 };

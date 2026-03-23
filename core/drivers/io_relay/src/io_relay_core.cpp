@@ -18,6 +18,10 @@ namespace io_relay {
 
 namespace {
 
+constexpr int kStartupStableDelayMs = 500;
+constexpr int kWriteVerifyDelayMs = 100;
+constexpr int kWriteVerifyRetries = 2;
+
 int computeRetryDelayMs(const IoRelayCore::RetryPolicy& policy, int retry_index) {
   if (retry_index <= 0) return 0;
   const int base = std::max(0, policy.base_backoff_ms);
@@ -53,7 +57,9 @@ IoRelayCore::IoRelayCore(const std::string& module_ip,
       module_slave_id_(module_slave_id),
       transaction_id_(0x31A6),
       socket_fd_(-1),
-      retry_policy_(retry_policy) {}
+      retry_policy_(retry_policy),
+      startup_stable_after_(std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(kStartupStableDelayMs)) {}
 
 IoRelayCore::~IoRelayCore() {
   std::lock_guard<std::mutex> lock(socket_mutex_);
@@ -65,6 +71,15 @@ bool IoRelayCore::parseRelayNum(int relay_num, uint16_t* coil_addr) const {
   if (relay_num < 1 || relay_num > 16) return false;
   *coil_addr = static_cast<uint16_t>(relay_num - 1);  // 1->0x0000 ... 16->0x000F
   return true;
+}
+
+void IoRelayCore::waitForStartupStableWindow() {
+  const auto now = std::chrono::steady_clock::now();
+  if (now >= startup_stable_after_) return;
+  const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(startup_stable_after_ - now);
+  if (remaining.count() > 0) {
+    std::this_thread::sleep_for(remaining);
+  }
 }
 
 std::vector<uint8_t> IoRelayCore::createModbusPacket(uint8_t function_code,
@@ -195,7 +210,78 @@ bool IoRelayCore::sendAndReceiveLocked(const std::vector<uint8_t>& packet,
   return true;
 }
 
+bool IoRelayCore::parseReadCoilsResponse(const std::vector<uint8_t>& response,
+                                         int expected_count,
+                                         std::vector<bool>* states) {
+  if (!states) return false;
+  states->clear();
+  if (expected_count <= 0) return false;
+  if (response.size() < 10) {
+    std::cout << "[io_relay] ❌ 继电器状态响应长度异常\n";
+    return false;
+  }
+  if (response[7] != 0x01) {
+    std::cout << "[io_relay] ❌ 继电器读取功能码异常: 0x" << std::hex << static_cast<int>(response[7])
+              << std::dec << "\n";
+    return false;
+  }
+
+  const uint8_t byte_count = response[8];
+  if (response.size() < static_cast<size_t>(9 + byte_count)) {
+    std::cout << "[io_relay] ❌ 继电器状态数据长度异常\n";
+    return false;
+  }
+
+  states->reserve(static_cast<size_t>(expected_count));
+  for (int i = 0; i < expected_count; ++i) {
+    const int byte_idx = i / 8;
+    const int bit_idx = i % 8;
+    if (byte_idx >= byte_count) {
+      std::cout << "[io_relay] ❌ 继电器状态字节数不足，期望通道数=" << expected_count << "\n";
+      states->clear();
+      return false;
+    }
+    states->push_back(((response[9 + byte_idx] >> bit_idx) & 0x1) != 0);
+  }
+  return true;
+}
+
+bool IoRelayCore::readRelayStates(int relay_num, std::vector<bool>* states) {
+  if (!states) return false;
+  waitForStartupStableWindow();
+
+  bool ok = false;
+  std::vector<uint8_t> packet;
+  int expected_count = 0;
+  if (relay_num > 0) {
+    uint16_t addr = 0;
+    if (!parseRelayNum(relay_num, &addr)) {
+      std::cout << "[io_relay] ❌ 路数错误，仅支持1-16路\n";
+      return false;
+    }
+    packet = createModbusPacket(0x01, addr, 0, 1, module_slave_id_, &ok);
+    expected_count = 1;
+  } else {
+    packet = createModbusPacket(0x01, 0x0000, 0, 16, module_slave_id_, &ok);
+    expected_count = 16;
+  }
+  if (!ok) return false;
+
+  std::vector<uint8_t> response;
+  if (!sendModbusPacket(packet, &response, "继电器状态读取")) return false;
+  return parseReadCoilsResponse(response, expected_count, states);
+}
+
+bool IoRelayCore::readSingleRelayState(int relay_num, bool* on) {
+  if (!on) return false;
+  std::vector<bool> states;
+  if (!readRelayStates(relay_num, &states) || states.size() != 1) return false;
+  *on = states[0];
+  return true;
+}
+
 bool IoRelayCore::controlRelay(int relay_num, const std::string& status) {
+  waitForStartupStableWindow();
   uint16_t coil_addr = 0;
   if (!parseRelayNum(relay_num, &coil_addr)) {
     std::cout << "[io_relay] ❌ 路数错误，仅支持1-16路\n";
@@ -216,8 +302,29 @@ bool IoRelayCore::controlRelay(int relay_num, const std::string& status) {
   if (!sendModbusPacket(packet, &response, "继电器控制")) return false;
 
   if (response == packet) {
-    std::cout << "[io_relay] ✅ 第" << relay_num << "路继电器已" << (status == "on" ? "吸合" : "断开") << "\n";
-    return true;
+    const bool target_on = (status == "on");
+    for (int verify_attempt = 0; verify_attempt <= kWriteVerifyRetries; ++verify_attempt) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(kWriteVerifyDelayMs));
+      bool readback_on = false;
+      if (!readSingleRelayState(relay_num, &readback_on)) {
+        std::cout << "[io_relay] ⚠️ 第" << relay_num << "路继电器写后回读失败，第"
+                  << (verify_attempt + 1) << "/" << (kWriteVerifyRetries + 1) << "次校验\n";
+        continue;
+      }
+      if (readback_on == target_on) {
+        std::cout << "[io_relay] ✅ 第" << relay_num << "路继电器写入目标="
+                  << (target_on ? "on" : "off") << "，FC01读回="
+                  << (readback_on ? "on" : "off") << "\n";
+        return true;
+      }
+      std::cout << "[io_relay] ⚠️ 第" << relay_num << "路继电器写入目标="
+                << (target_on ? "on" : "off") << "，但FC01读回="
+                << (readback_on ? "on" : "off")
+                << "，第" << (verify_attempt + 1) << "/" << (kWriteVerifyRetries + 1)
+                << "次校验不一致\n";
+    }
+    std::cout << "[io_relay] ❌ 第" << relay_num << "路继电器写入后FC01回读始终不一致\n";
+    return false;
   } else {
     std::cout << "[io_relay] ⚠️ 模块应答异常，响应长度=" << response.size() << "\n";
     return false;
@@ -225,54 +332,25 @@ bool IoRelayCore::controlRelay(int relay_num, const std::string& status) {
 }
 
 bool IoRelayCore::readRelayStatus(int relay_num) {
-  bool ok = false;
-  std::vector<uint8_t> packet;
-
+  std::vector<bool> states;
+  if (!readRelayStates(relay_num, &states)) return false;
   if (relay_num > 0) {
-    uint16_t addr = 0;
-    if (!parseRelayNum(relay_num, &addr)) {
-      std::cout << "[io_relay] ❌ 路数错误，仅支持1-16路\n";
-      return false;
-    }
-    packet = createModbusPacket(0x01, addr, 0, 1, module_slave_id_, &ok);
-  } else {
-    packet = createModbusPacket(0x01, 0x0000, 0, 16, module_slave_id_, &ok);
-  }
-  if (!ok) return false;
-
-  std::vector<uint8_t> response;
-  if (!sendModbusPacket(packet, &response, "继电器状态读取")) return false;
-
-  if (response.size() < 10) {
-    std::cout << "[io_relay] ❌ 继电器状态响应长度异常\n";
-    return false;
-  }
-  if (response[7] != 0x01) {
-    std::cout << "[io_relay] ❌ 继电器读取功能码异常: 0x" << std::hex << static_cast<int>(response[7])
-              << std::dec << "\n";
-    return false;
-  }
-
-  const uint8_t byte_count = response[8];
-  if (response.size() < static_cast<size_t>(9 + byte_count)) {
-    std::cout << "[io_relay] ❌ 继电器状态数据长度异常\n";
-    return false;
-  }
-
-  if (relay_num > 0) {
-    const bool on = (response[9] & 0x01) != 0;
-    std::cout << "[io_relay] 📌 第" << relay_num << "路继电器状态：" << (on ? "吸合" : "断开") << "\n";
+    const bool on = states[0];
+    std::cout << "[io_relay] 📌 第" << relay_num << "路继电器实际输出状态（FC01）：" << (on ? "on" : "off")
+              << "\n";
     return true;
   }
 
-  std::cout << "\n[io_relay] 📌 所有继电器状态：\n";
+  std::cout << "\n[io_relay] 📌 所有继电器实际输出状态（FC01）：\n";
   for (int i = 1; i <= 16; ++i) {
-    const int byte_idx = (i - 1) / 8;
-    const int bit_idx = (i - 1) % 8;
-    const bool on = ((response[9 + byte_idx] >> bit_idx) & 0x1) != 0;
-    std::cout << "  第" << i << "路：" << (on ? "吸合" : "断开") << "\n";
+    const bool on = states[static_cast<size_t>(i - 1)];
+    std::cout << "  第" << i << "路：" << (on ? "on" : "off") << "\n";
   }
   return true;
+}
+
+bool IoRelayCore::getRelayState(int relay_num, bool* on) {
+  return readSingleRelayState(relay_num, on);
 }
 
 }  // namespace io_relay
