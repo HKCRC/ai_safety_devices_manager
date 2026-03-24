@@ -59,145 +59,95 @@ std::string formatHexBytes(const std::vector<uint8_t>& data) {
   return oss.str();
 }
 
-bool spdLidarExchangeTcp(const ai_safety_controller::Interface::SpdLidarInstanceDefaults& cfg,
-                         const std::vector<uint8_t>& request,
-                         std::vector<uint8_t>* response,
-                         std::string* error) {
+bool spdLidarExchangeOnConnectedFd(int fd,
+                                   const std::vector<uint8_t>& request,
+                                   std::vector<uint8_t>* response,
+                                   std::string* error) {
   if (!response) return false;
   response->clear();
 
-  const auto exchange_on_connected_fd =
-      [&request, response, error](int fd) -> bool {
-        timeval tv{};
-        tv.tv_sec = 1;
-        tv.tv_usec = 0;
-        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  timeval tv{};
+  tv.tv_sec = 1;
+  tv.tv_usec = 0;
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-        const ssize_t sent = ::send(fd, request.data(), request.size(), 0);
-        if (sent < 0 || static_cast<size_t>(sent) != request.size()) {
-          if (error) *error = std::string("send failed: ") + std::strerror(errno);
-          return false;
-        }
+  const ssize_t sent = ::send(fd, request.data(), request.size(), 0);
+  if (sent < 0 || static_cast<size_t>(sent) != request.size()) {
+    if (error) *error = std::string("send failed: ") + std::strerror(errno);
+    return false;
+  }
 
-        uint8_t buf[256];
-        const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
-        if (n <= 0) {
-          if (error) *error = std::string("recv failed: ") + std::strerror(errno);
-          return false;
-        }
-        response->assign(buf, buf + n);
-        return true;
-      };
+  uint8_t buf[256];
+  const ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+  if (n <= 0) {
+    if (error) *error = std::string("recv failed: ") + std::strerror(errno);
+    return false;
+  }
+  response->assign(buf, buf + n);
+  return true;
+}
 
-  if (cfg.mode == "server") {
-    if (cfg.local_ip.empty() || cfg.local_port <= 0) {
-      if (error) *error = "invalid spd_lidar local endpoint";
-      return false;
-    }
+std::string sockaddrIp(const sockaddr_in& addr) {
+  char buf[INET_ADDRSTRLEN] = {0};
+  if (::inet_ntop(AF_INET, &addr.sin_addr, buf, sizeof(buf)) == nullptr) {
+    return std::string{};
+  }
+  return std::string(buf);
+}
 
-    const int listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_fd < 0) {
-      if (error) *error = std::string("server socket failed: ") + std::strerror(errno);
-      return false;
-    }
-    int reuse_addr = 1;
-    ::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(reuse_addr));
+int createSpdLidarListenSocket(const std::string& bind_ip,
+                               int bind_port,
+                               std::string* actual_bind_ip,
+                               std::string* error) {
+  const int listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (listen_fd < 0) {
+    if (error) *error = std::string("server socket failed: ") + std::strerror(errno);
+    return -1;
+  }
+  int reuse_addr = 1;
+  ::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(reuse_addr));
 
-    sockaddr_in local_addr{};
-    local_addr.sin_family = AF_INET;
-    local_addr.sin_port = htons(static_cast<uint16_t>(cfg.local_port));
-    if (::inet_pton(AF_INET, cfg.local_ip.c_str(), &local_addr.sin_addr) != 1) {
-      if (error) *error = "invalid local ip: " + cfg.local_ip;
-      ::close(listen_fd);
-      return false;
-    }
-    if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&local_addr), sizeof(local_addr)) != 0) {
-      if (errno == EADDRNOTAVAIL) {
-        sockaddr_in any_addr{};
-        any_addr.sin_family = AF_INET;
-        any_addr.sin_port = htons(static_cast<uint16_t>(cfg.local_port));
-        any_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&any_addr), sizeof(any_addr)) != 0) {
-          if (error) {
-            *error = "bind failed on " + cfg.local_ip + ":" + std::to_string(cfg.local_port) +
-                     ", fallback 0.0.0.0 failed: " + std::strerror(errno);
-          }
-          ::close(listen_fd);
-          return false;
-        }
-        std::cout << "[spd_lidar] warning: local_ip " << cfg.local_ip
-                  << " not present on host, fallback bind 0.0.0.0:" << cfg.local_port << "\n";
-      } else {
-        if (error) *error = std::string("bind failed: ") + std::strerror(errno);
-        ::close(listen_fd);
-        return false;
-      }
-    }
-    if (::listen(listen_fd, 1) != 0) {
-      if (error) *error = std::string("listen failed: ") + std::strerror(errno);
-      ::close(listen_fd);
-      return false;
-    }
-
-    fd_set read_fds;
-    FD_ZERO(&read_fds);
-    FD_SET(listen_fd, &read_fds);
-    timeval accept_tv{};
-    accept_tv.tv_sec = 1;
-    accept_tv.tv_usec = 0;
-    const int ready = ::select(listen_fd + 1, &read_fds, nullptr, nullptr, &accept_tv);
-    if (ready <= 0) {
-      if (error) {
-        *error = (ready == 0) ? "accept timeout"
-                              : std::string("select failed: ") + std::strerror(errno);
-      }
-      ::close(listen_fd);
-      return false;
-    }
-
-    sockaddr_in peer_addr{};
-    socklen_t peer_len = sizeof(peer_addr);
-    const int conn_fd = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
+  sockaddr_in local_addr{};
+  local_addr.sin_family = AF_INET;
+  local_addr.sin_port = htons(static_cast<uint16_t>(bind_port));
+  if (::inet_pton(AF_INET, bind_ip.c_str(), &local_addr.sin_addr) != 1) {
+    if (error) *error = "invalid local ip: " + bind_ip;
     ::close(listen_fd);
-    if (conn_fd < 0) {
-      if (error) *error = std::string("accept failed: ") + std::strerror(errno);
-      return false;
+    return -1;
+  }
+  if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&local_addr), sizeof(local_addr)) != 0) {
+    if (errno == EADDRNOTAVAIL) {
+      sockaddr_in any_addr{};
+      any_addr.sin_family = AF_INET;
+      any_addr.sin_port = htons(static_cast<uint16_t>(bind_port));
+      any_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+      if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&any_addr), sizeof(any_addr)) != 0) {
+        if (error) {
+          *error = "bind failed on " + bind_ip + ":" + std::to_string(bind_port) +
+                   ", fallback 0.0.0.0 failed: " + std::strerror(errno);
+        }
+        ::close(listen_fd);
+        return -1;
+      }
+      if (actual_bind_ip) *actual_bind_ip = "0.0.0.0";
+      std::cout << "[spd_lidar] warning: local_ip " << bind_ip
+                << " not present on host, fallback bind 0.0.0.0:" << bind_port << "\n";
+    } else {
+      if (error) *error = std::string("bind failed: ") + std::strerror(errno);
+      ::close(listen_fd);
+      return -1;
     }
-
-    const bool ok = exchange_on_connected_fd(conn_fd);
-    ::close(conn_fd);
-    return ok;
+  } else if (actual_bind_ip) {
+    *actual_bind_ip = bind_ip;
   }
 
-  if (cfg.device_ip.empty() || cfg.device_port <= 0) {
-    if (error) *error = "invalid spd_lidar device endpoint";
-    return false;
+  if (::listen(listen_fd, 8) != 0) {
+    if (error) *error = std::string("listen failed: ") + std::strerror(errno);
+    ::close(listen_fd);
+    return -1;
   }
-
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    if (error) *error = std::string("socket failed: ") + std::strerror(errno);
-    return false;
-  }
-
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(static_cast<uint16_t>(cfg.device_port));
-  if (::inet_pton(AF_INET, cfg.device_ip.c_str(), &addr.sin_addr) != 1) {
-    if (error) *error = "invalid ip: " + cfg.device_ip;
-    ::close(fd);
-    return false;
-  }
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    if (error) *error = std::string("connect failed: ") + std::strerror(errno);
-    ::close(fd);
-    return false;
-  }
-
-  const bool ok = exchange_on_connected_fd(fd);
-  ::close(fd);
-  return ok;
+  return listen_fd;
 }
 
 class FunctionDriverAdapter : public DriverAdapter {
@@ -985,8 +935,8 @@ void Interface::buildDriverAdapters() {
     drivers_["spd_lidar"] = std::make_unique<FunctionDriverAdapter>(
         "spd_lidar",
         []() { return Status{true, "ok"}; },
-        []() { return Status{true, "spd_lidar adapter started"}; },
-        []() { return Status{true, "spd_lidar adapter stopped"}; },
+        [this]() { return startSpdLidarServers(); },
+        [this]() { return stopSpdLidarServers(); },
         [this](const std::vector<std::string>& args) { return querySpdLidar(args); },
         []() { return std::vector<std::string>{"list", "status", "send"}; });
   }
@@ -1550,8 +1500,8 @@ Status Interface::init() {
     lidar->on_send.connect([this, cfg, id, lidar_raw](const std::vector<uint8_t>& req) {
       std::vector<uint8_t> resp;
       std::string err;
-      if (!spdLidarExchangeTcp(cfg, req, &resp, &err)) {
-        if (cfg.mode == "server" && err == "accept timeout") {
+      if (!spdLidarExchange(cfg, req, &resp, &err)) {
+        if (cfg.mode == "server" && (err == "accept timeout" || err == "client not connected")) {
           bool should_log = false;
           {
             std::lock_guard<std::mutex> lock(spd_lidar_log_mutex_);
@@ -1581,6 +1531,40 @@ Status Interface::init() {
     spd_lidar_instances_core_[id] = std::move(lidar);
   }
 #endif
+
+  {
+    std::lock_guard<std::mutex> lock(output_mutex_);
+    std::cout << "[init-summary] configured and instantiated drivers\n";
+#ifdef ASC_ENABLE_BATTERY
+    std::cout << "  - battery: configured=" << (battery_defaults_.enable ? "true" : "false")
+              << ", instantiated=" << (battery_ ? "true" : "false") << "\n";
+#endif
+#ifdef ASC_ENABLE_SOLAR
+    std::cout << "  - solar: configured=" << (solar_defaults_.enable ? "true" : "false")
+              << ", instantiated=" << (solar_ ? "true" : "false") << "\n";
+#endif
+#ifdef ASC_ENABLE_HOIST_HOOK
+    std::cout << "  - hoist_hook: configured=" << (hoist_hook_defaults_.enable ? "true" : "false")
+              << ", instantiated=" << (hoist_hook_ ? "true" : "false") << "\n";
+#endif
+#ifdef ASC_ENABLE_IO_RELAY
+    std::cout << "  - io_relay: configured=" << (io_relay_defaults_.enable ? "true" : "false")
+              << ", instantiated=" << (io_relay_ ? "true" : "false") << "\n";
+#endif
+#ifdef ASC_ENABLE_MULTI_TURN_ENCODER
+    std::cout << "  - multi_turn_encoder: configured=" << (encoder_defaults_.enable ? "true" : "false")
+              << ", instantiated=" << (multi_turn_encoder_ ? "true" : "false") << "\n";
+#endif
+#ifdef ASC_ENABLE_SPD_LIDAR
+    for (size_t i = 0; i < spd_lidar_instances_.size(); ++i) {
+      const SpdLidarInstanceDefaults& cfg = spd_lidar_instances_[i];
+      const bool instantiated = spd_lidar_instances_core_.find(cfg.id) != spd_lidar_instances_core_.end();
+      std::cout << "  - spd_lidar:" << cfg.id
+                << ": configured=" << (cfg.enable ? "true" : "false")
+                << ", instantiated=" << (instantiated ? "true" : "false") << "\n";
+    }
+#endif
+  }
 
   buildDriverAdapters();
   for (std::unordered_map<std::string, std::unique_ptr<DriverAdapter>>::iterator it = drivers_.begin();
@@ -1871,6 +1855,279 @@ Status Interface::queryMultiTurnEncoder(const std::vector<std::string>& args) {
 #endif
 
 #ifdef ASC_ENABLE_SPD_LIDAR
+std::string Interface::spdLidarEndpointKey(const std::string& ip, int port) {
+  return ip + ":" + std::to_string(port);
+}
+
+void Interface::closeSpdLidarServerConnectionLocked(const std::string& id) {
+  std::unordered_map<std::string, SpdLidarServerConnectionState>::iterator it =
+      spd_lidar_server_connections_.find(id);
+  if (it == spd_lidar_server_connections_.end()) return;
+  if (it->second.conn_fd >= 0) {
+    ::close(it->second.conn_fd);
+    it->second.conn_fd = -1;
+  }
+  it->second.peer_ip.clear();
+  it->second.peer_port = 0;
+}
+
+Status Interface::startSpdLidarServers() {
+  bool has_server_instance = false;
+  for (size_t i = 0; i < spd_lidar_instances_.size(); ++i) {
+    if (spd_lidar_instances_[i].enable && spd_lidar_instances_[i].mode == "server") {
+      has_server_instance = true;
+      break;
+    }
+  }
+  if (!has_server_instance) return Status{true, "spd_lidar has no server listeners"};
+
+  {
+    std::lock_guard<std::mutex> lock(spd_lidar_server_mutex_);
+    if (spd_lidar_server_running_) {
+      return Status{true, "spd_lidar listeners already started"};
+    }
+    spd_lidar_server_endpoints_.clear();
+    spd_lidar_server_connections_.clear();
+    for (size_t i = 0; i < spd_lidar_instances_.size(); ++i) {
+      const SpdLidarInstanceDefaults& cfg = spd_lidar_instances_[i];
+      if (!cfg.enable || cfg.mode != "server") continue;
+      const std::string key = spdLidarEndpointKey(cfg.local_ip, cfg.local_port);
+      SpdLidarServerEndpointState& endpoint = spd_lidar_server_endpoints_[key];
+      endpoint.bind_ip = cfg.local_ip;
+      endpoint.bind_port = cfg.local_port;
+      endpoint.instance_ids.push_back(cfg.id);
+      spd_lidar_server_connections_[cfg.id] = SpdLidarServerConnectionState{};
+    }
+  }
+
+  std::vector<std::string> endpoint_keys;
+  {
+    std::lock_guard<std::mutex> lock(spd_lidar_server_mutex_);
+    spd_lidar_server_running_ = true;
+    for (std::unordered_map<std::string, SpdLidarServerEndpointState>::iterator it =
+             spd_lidar_server_endpoints_.begin();
+         it != spd_lidar_server_endpoints_.end(); ++it) {
+      endpoint_keys.push_back(it->first);
+    }
+  }
+
+  for (size_t i = 0; i < endpoint_keys.size(); ++i) {
+    const std::string& key = endpoint_keys[i];
+    std::string error;
+    std::string actual_bind_ip;
+    std::string bind_ip;
+    int bind_port = 0;
+    {
+      std::lock_guard<std::mutex> lock(spd_lidar_server_mutex_);
+      std::unordered_map<std::string, SpdLidarServerEndpointState>::iterator it =
+          spd_lidar_server_endpoints_.find(key);
+      if (it == spd_lidar_server_endpoints_.end()) continue;
+      bind_ip = it->second.bind_ip;
+      bind_port = it->second.bind_port;
+    }
+
+    const int listen_fd = createSpdLidarListenSocket(bind_ip, bind_port, &actual_bind_ip, &error);
+    if (listen_fd < 0) {
+      stopSpdLidarServers();
+      return Status{false, "spd_lidar listen failed on " + key + ": " + error};
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(spd_lidar_server_mutex_);
+      std::unordered_map<std::string, SpdLidarServerEndpointState>::iterator it =
+          spd_lidar_server_endpoints_.find(key);
+      if (it == spd_lidar_server_endpoints_.end()) {
+        ::close(listen_fd);
+        continue;
+      }
+      it->second.listen_fd = listen_fd;
+      if (!actual_bind_ip.empty()) it->second.bind_ip = actual_bind_ip;
+      it->second.accept_thread = std::thread([this, key]() { spdLidarAcceptLoop(key); });
+      std::cout << "[spd_lidar] listening at " << it->second.bind_ip << ":" << it->second.bind_port
+                << " for " << it->second.instance_ids.size() << " instance(s)\n";
+    }
+  }
+
+  return Status{true, "spd_lidar listeners started"};
+}
+
+Status Interface::stopSpdLidarServers() {
+  std::vector<std::thread> threads;
+  {
+    std::lock_guard<std::mutex> lock(spd_lidar_server_mutex_);
+    spd_lidar_server_running_ = false;
+    for (std::unordered_map<std::string, SpdLidarServerEndpointState>::iterator it =
+             spd_lidar_server_endpoints_.begin();
+         it != spd_lidar_server_endpoints_.end(); ++it) {
+      if (it->second.listen_fd >= 0) {
+        ::close(it->second.listen_fd);
+        it->second.listen_fd = -1;
+      }
+      if (it->second.accept_thread.joinable()) {
+        threads.push_back(std::move(it->second.accept_thread));
+      }
+    }
+    for (std::unordered_map<std::string, SpdLidarServerConnectionState>::iterator it =
+             spd_lidar_server_connections_.begin();
+         it != spd_lidar_server_connections_.end(); ++it) {
+      if (it->second.conn_fd >= 0) {
+        ::close(it->second.conn_fd);
+        it->second.conn_fd = -1;
+      }
+    }
+    spd_lidar_server_connections_.clear();
+    spd_lidar_server_endpoints_.clear();
+  }
+
+  for (size_t i = 0; i < threads.size(); ++i) {
+    if (threads[i].joinable()) threads[i].join();
+  }
+  return Status{true, "spd_lidar listeners stopped"};
+}
+
+std::string Interface::matchSpdLidarServerInstance(const std::string& endpoint_key,
+                                                   const std::string& peer_ip,
+                                                   int peer_port) const {
+  std::string ip_match;
+  std::string fallback_match;
+  for (size_t i = 0; i < spd_lidar_instances_.size(); ++i) {
+    const SpdLidarInstanceDefaults& cfg = spd_lidar_instances_[i];
+    if (!cfg.enable || cfg.mode != "server") continue;
+    if (spdLidarEndpointKey(cfg.local_ip, cfg.local_port) != endpoint_key) continue;
+    if (cfg.device_ip == peer_ip && cfg.device_port == peer_port) return cfg.id;
+    if (ip_match.empty() && cfg.device_ip == peer_ip) ip_match = cfg.id;
+    if (fallback_match.empty()) fallback_match = cfg.id;
+  }
+  if (!ip_match.empty()) return ip_match;
+  return fallback_match;
+}
+
+void Interface::spdLidarAcceptLoop(const std::string& endpoint_key) {
+  while (spd_lidar_server_running_) {
+    int listen_fd = -1;
+    {
+      std::lock_guard<std::mutex> lock(spd_lidar_server_mutex_);
+      std::unordered_map<std::string, SpdLidarServerEndpointState>::iterator it =
+          spd_lidar_server_endpoints_.find(endpoint_key);
+      if (it == spd_lidar_server_endpoints_.end()) return;
+      listen_fd = it->second.listen_fd;
+    }
+    if (listen_fd < 0) return;
+
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(listen_fd, &read_fds);
+    timeval accept_tv{};
+    accept_tv.tv_sec = 1;
+    accept_tv.tv_usec = 0;
+    const int ready = ::select(listen_fd + 1, &read_fds, nullptr, nullptr, &accept_tv);
+    if (!spd_lidar_server_running_) break;
+    if (ready == 0) continue;
+    if (ready < 0) {
+      if (errno == EINTR || errno == EBADF) continue;
+      std::cout << "[spd_lidar] accept loop error on " << endpoint_key
+                << ": " << std::strerror(errno) << "\n";
+      continue;
+    }
+
+    sockaddr_in peer_addr{};
+    socklen_t peer_len = sizeof(peer_addr);
+    const int conn_fd = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&peer_addr), &peer_len);
+    if (conn_fd < 0) {
+      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+      if (spd_lidar_server_running_) {
+        std::cout << "[spd_lidar] accept failed on " << endpoint_key
+                  << ": " << std::strerror(errno) << "\n";
+      }
+      continue;
+    }
+
+    const std::string peer_ip = sockaddrIp(peer_addr);
+    const int peer_port = static_cast<int>(ntohs(peer_addr.sin_port));
+    const std::string instance_id = matchSpdLidarServerInstance(endpoint_key, peer_ip, peer_port);
+    if (instance_id.empty()) {
+      std::cout << "[spd_lidar] reject unknown client " << peer_ip << ":" << peer_port
+                << " on " << endpoint_key << "\n";
+      ::close(conn_fd);
+      continue;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(spd_lidar_server_mutex_);
+      if (!spd_lidar_server_running_) {
+        ::close(conn_fd);
+        break;
+      }
+      closeSpdLidarServerConnectionLocked(instance_id);
+      SpdLidarServerConnectionState& conn = spd_lidar_server_connections_[instance_id];
+      conn.conn_fd = conn_fd;
+      conn.peer_ip = peer_ip;
+      conn.peer_port = peer_port;
+    }
+    {
+      std::lock_guard<std::mutex> lock(spd_lidar_log_mutex_);
+      spd_lidar_wait_logged_.erase(instance_id);
+    }
+    std::cout << "[spd_lidar:" << instance_id << "] client connected from "
+              << peer_ip << ":" << peer_port << "\n";
+  }
+}
+
+bool Interface::spdLidarExchange(const SpdLidarInstanceDefaults& cfg,
+                                 const std::vector<uint8_t>& request,
+                                 std::vector<uint8_t>* response,
+                                 std::string* error) {
+  if (cfg.mode != "server") {
+    if (!response) return false;
+    response->clear();
+    if (cfg.device_ip.empty() || cfg.device_port <= 0) {
+      if (error) *error = "invalid spd_lidar device endpoint";
+      return false;
+    }
+
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+      if (error) *error = std::string("socket failed: ") + std::strerror(errno);
+      return false;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(cfg.device_port));
+    if (::inet_pton(AF_INET, cfg.device_ip.c_str(), &addr.sin_addr) != 1) {
+      if (error) *error = "invalid ip: " + cfg.device_ip;
+      ::close(fd);
+      return false;
+    }
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+      if (error) *error = std::string("connect failed: ") + std::strerror(errno);
+      ::close(fd);
+      return false;
+    }
+
+    const bool ok = spdLidarExchangeOnConnectedFd(fd, request, response, error);
+    ::close(fd);
+    return ok;
+  }
+
+  std::lock_guard<std::mutex> lock(spd_lidar_server_mutex_);
+  std::unordered_map<std::string, SpdLidarServerConnectionState>::iterator it =
+      spd_lidar_server_connections_.find(cfg.id);
+  if (it == spd_lidar_server_connections_.end() || it->second.conn_fd < 0) {
+    if (error) *error = "client not connected";
+    return false;
+  }
+
+  const int fd = it->second.conn_fd;
+  const bool ok = spdLidarExchangeOnConnectedFd(fd, request, response, error);
+  if (!ok) {
+    closeSpdLidarServerConnectionLocked(cfg.id);
+  }
+  return ok;
+}
+#endif
+
+#ifdef ASC_ENABLE_SPD_LIDAR
 Status Interface::querySpdLidar(const std::vector<std::string>& args) {
   if (args.empty()) return Status{false, "missing command"};
   const std::string& cmd = args[0];
@@ -1879,12 +2136,29 @@ Status Interface::querySpdLidar(const std::vector<std::string>& args) {
     for (size_t i = 0; i < spd_lidar_instances_.size(); ++i) {
       const SpdLidarInstanceDefaults& cfg = spd_lidar_instances_[i];
       const bool initialized = findSpdLidarById(cfg.id) != nullptr;
+      bool connected = false;
+      std::string peer_ip;
+      int peer_port = 0;
+      if (cfg.mode == "server") {
+        std::lock_guard<std::mutex> lock(spd_lidar_server_mutex_);
+        std::unordered_map<std::string, SpdLidarServerConnectionState>::const_iterator conn_it =
+            spd_lidar_server_connections_.find(cfg.id);
+        if (conn_it != spd_lidar_server_connections_.end() && conn_it->second.conn_fd >= 0) {
+          connected = true;
+          peer_ip = conn_it->second.peer_ip;
+          peer_port = conn_it->second.peer_port;
+        }
+      }
       std::cout << "  - id=" << cfg.id
                 << " enable=" << (cfg.enable ? "true" : "false")
                 << " mode=" << cfg.mode
                 << " local=" << cfg.local_ip << ":" << cfg.local_port
                 << " device=" << cfg.device_ip << ":" << cfg.device_port
                 << " initialized=" << (initialized ? "true" : "false");
+      if (cfg.mode == "server") {
+        std::cout << " connected=" << (connected ? "true" : "false");
+        if (connected) std::cout << " peer=" << peer_ip << ":" << peer_port;
+      }
       if (!cfg.role.empty()) std::cout << " role=" << cfg.role;
       std::cout << " vertical_angle_to_vertical_deg=" << cfg.vertical_angle_to_vertical_deg
                 << "\n";

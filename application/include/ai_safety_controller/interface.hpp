@@ -259,6 +259,18 @@ class Interface {
 #ifdef ASC_ENABLE_SPD_LIDAR
   spd_lidar::SpdLidarCore* findSpdLidarById(const std::string& id);
   const spd_lidar::SpdLidarCore* findSpdLidarById(const std::string& id) const;
+  Status startSpdLidarServers();
+  Status stopSpdLidarServers();
+  bool spdLidarExchange(const SpdLidarInstanceDefaults& cfg,
+                        const std::vector<uint8_t>& request,
+                        std::vector<uint8_t>* response,
+                        std::string* error);
+  void spdLidarAcceptLoop(const std::string& endpoint_key);
+  std::string matchSpdLidarServerInstance(const std::string& endpoint_key,
+                                          const std::string& peer_ip,
+                                          int peer_port) const;
+  void closeSpdLidarServerConnectionLocked(const std::string& id);
+  static std::string spdLidarEndpointKey(const std::string& ip, int port);
 #endif
 
   bool initialized_;
@@ -313,9 +325,25 @@ class Interface {
   std::atomic<std::int64_t> solar_charge_last_ok_ms_{0};
 #endif
 #ifdef ASC_ENABLE_SPD_LIDAR
+  struct SpdLidarServerEndpointState {
+    std::string bind_ip;
+    int bind_port = 0;
+    int listen_fd = -1;
+    std::vector<std::string> instance_ids;
+    std::thread accept_thread;
+  };
+  struct SpdLidarServerConnectionState {
+    int conn_fd = -1;
+    std::string peer_ip;
+    int peer_port = 0;
+  };
   std::unordered_map<std::string, std::unique_ptr<spd_lidar::SpdLidarCore>> spd_lidar_instances_core_;
   std::unordered_set<std::string> spd_lidar_wait_logged_;
   mutable std::mutex spd_lidar_log_mutex_;
+  std::unordered_map<std::string, SpdLidarServerEndpointState> spd_lidar_server_endpoints_;
+  std::unordered_map<std::string, SpdLidarServerConnectionState> spd_lidar_server_connections_;
+  std::atomic<bool> spd_lidar_server_running_{false};
+  mutable std::mutex spd_lidar_server_mutex_;
 #endif
 
 #ifdef ASC_ENABLE_SPD_LIDAR
