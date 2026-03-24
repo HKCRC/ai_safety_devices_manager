@@ -8,6 +8,35 @@
 
 namespace ai_safety_controller {
 
+namespace {
+
+bool equalsBatteryInfo(const ai_safety_common::DeviceStatus::BatteryInfo& lhs,
+                       const ai_safety_common::DeviceStatus::BatteryInfo& rhs) {
+  return lhs.percent == rhs.percent &&
+         lhs.remainingMin == rhs.remainingMin &&
+         lhs.isCharging == rhs.isCharging &&
+         lhs.chargingTimeMin == rhs.chargingTimeMin &&
+         lhs.voltageV == rhs.voltageV &&
+         lhs.currentA == rhs.currentA;
+}
+
+bool equalsDeviceStatus(const ai_safety_common::DeviceStatus& lhs,
+                        const ai_safety_common::DeviceStatus& rhs) {
+  return lhs.solarCharge == rhs.solarCharge &&
+         lhs.trolleyState == rhs.trolleyState &&
+         equalsBatteryInfo(lhs.trolleyBattery, rhs.trolleyBattery) &&
+         lhs.hookState == rhs.hookState &&
+         equalsBatteryInfo(lhs.hookBattery, rhs.hookBattery);
+}
+
+bool equalsCraneState(const ai_safety_common::CraneState& lhs,
+                      const ai_safety_common::CraneState& rhs) {
+  return lhs.hookToTrolleyDistanceM == rhs.hookToTrolleyDistanceM &&
+         lhs.groundToTrolleyDistanceM == rhs.groundToTrolleyDistanceM;
+}
+
+}  // namespace
+
 DevicesManagerClient::DevicesManagerClient() : impl_(std::make_unique<Interface>()) {}
 
 DevicesManagerClient::~DevicesManagerClient() {
@@ -235,9 +264,27 @@ void DevicesManagerClient::notifyThreadFunc() {
         restoreBatteryButtonPowerStateFromRelays(false);
         next_relay_state_sync_ts_ = now + relay_state_sync_interval_;
       }
-      if (now - last_push_ts_ >= std::chrono::seconds(1)) {
-        SignalSendDeviceStatus(getDeviceStatus());
-        SignalSendCraneState(getCraneState());
+      const ai_safety_common::DeviceStatus device_status = getDeviceStatus();
+      const ai_safety_common::CraneState crane_state = getCraneState();
+      const bool device_status_changed =
+          !has_last_sent_device_status_ ||
+          !equalsDeviceStatus(last_sent_device_status_, device_status);
+      const bool crane_state_changed =
+          !has_last_sent_crane_state_ ||
+          !equalsCraneState(last_sent_crane_state_, crane_state);
+      const bool keepalive_due = (now - last_push_ts_) >= status_push_keepalive_interval_;
+
+      if (device_status_changed || keepalive_due) {
+        SignalSendDeviceStatus(device_status);
+        last_sent_device_status_ = device_status;
+        has_last_sent_device_status_ = true;
+      }
+      if (crane_state_changed || keepalive_due) {
+        SignalSendCraneState(crane_state);
+        last_sent_crane_state_ = crane_state;
+        has_last_sent_crane_state_ = true;
+      }
+      if (device_status_changed || crane_state_changed || keepalive_due) {
         last_push_ts_ = now;
       }
     }
@@ -280,10 +327,12 @@ Status DevicesManagerClient::start() {
   battery_button_relay_channels_.erase(
       std::unique(battery_button_relay_channels_.begin(), battery_button_relay_channels_.end()),
       battery_button_relay_channels_.end());
+  has_last_sent_device_status_ = false;
+  has_last_sent_crane_state_ = false;
   last_battery_button_cmd_.reset();
   last_received_battery_button_cmd_.reset();
   restoreBatteryButtonPowerStateFromRelays();
-  last_push_ts_ = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+  last_push_ts_ = std::chrono::steady_clock::now() - status_push_keepalive_interval_;
   next_relay_state_sync_ts_ = std::chrono::steady_clock::now() + relay_state_sync_interval_;
   notify_stop_ = false;
   notify_thread_ = std::thread(&DevicesManagerClient::notifyThreadFunc, this);

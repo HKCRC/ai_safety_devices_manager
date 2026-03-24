@@ -20,14 +20,14 @@ class Interface;
 /**
  * 门面类：供主工程（如 main.cpp）统一调用设备管理能力。
  * 内部持有 Interface，对外暴露 loadConfig / init / start / stop / getDeviceStatus，
- * 以及 SignalSendDeviceStatus（定时推送 DeviceStatus 信号，与 SignalSendAlarm 用法一致）。
+ * 以及 SignalSendDeviceStatus（状态变化时尽快推送，并保留定时保活推送，与 SignalSendAlarm 用法一致）。
  * 以及 SignalSendCraneState（对外 CraneState 信号接口，供主工程按需 connect）。
  * 用法示例（主工程侧）：
  *   DevicesManagerClient client;
  *   client.SignalSendDeviceStatus.connect([](ai_safety_common::DeviceStatus d) { ... });
  *   if (!client.loadConfig(config_path).ok) { ... }
  *   if (!client.init().ok) { ... }
- *   client.start();  // 内部每秒推送一次 DeviceStatus
+ *   client.start();  // 内部状态变化时尽快推送 DeviceStatus，并保留周期性推送
  */
 class DevicesManagerClient {
  public:
@@ -41,7 +41,7 @@ class DevicesManagerClient {
   Status loadConfig(const std::string& path);
   /** 初始化设备与驱动，同 Interface::init */
   Status init();
-  /** 启动轮询等，同 Interface::start；同时启动定时推送线程，每秒触发 SignalSendDeviceStatus 信号 */
+  /** 启动轮询等，同 Interface::start；同时启动通知线程，在状态变化时尽快触发 SignalSendDeviceStatus */
   Status start();
   /** 停止轮询与定时推送，同 Interface::stop */
   Status stop();
@@ -70,7 +70,7 @@ class DevicesManagerClient {
   boost::signals2::signal<void(std::uint8_t&)> SignalGetBatteryButtonSignals;
 
   /**
-   * 定时推送信号：内部每秒调用 getDeviceStatus() 并触发此信号，主工程 connect 接收。
+   * 状态推送信号：内部在 DeviceStatus 变化时尽快触发，同时保留周期性推送，主工程 connect 接收。
    * 用法与 AISampler::SignalSendAlarm 一致；回调可能在内部线程执行，若需更新 Qt UI 请投递到主线程。
    */
   boost::signals2::signal<void(ai_safety_common::DeviceStatus)> SignalSendDeviceStatus;
@@ -121,9 +121,14 @@ class DevicesManagerClient {
   std::chrono::steady_clock::time_point last_push_ts_{};
   std::chrono::steady_clock::time_point next_relay_state_sync_ts_{};
   std::vector<int> battery_button_relay_channels_{};
+  ai_safety_common::DeviceStatus last_sent_device_status_{};
+  bool has_last_sent_device_status_ = false;
+  ai_safety_common::CraneState last_sent_crane_state_{};
+  bool has_last_sent_crane_state_ = false;
   std::optional<PowerCommand> last_battery_button_cmd_;
   std::optional<PowerCommand> last_received_battery_button_cmd_;
-  std::chrono::milliseconds relay_state_sync_interval_{1000};
+  std::chrono::milliseconds status_push_keepalive_interval_{1000};
+  std::chrono::milliseconds relay_state_sync_interval_{3000};
   std::atomic<bool> notify_stop_{false};
   std::thread notify_thread_;
 };
