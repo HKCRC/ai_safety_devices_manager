@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-CONFIG_PATH="${ROOT_DIR}/config/common_config.json"
+CONFIG_PATH="${ROOT_DIR}/config/common_config_sim.json"
 PID_FILE="${SCRIPT_DIR}/.sim_pids"
 LOG_DIR="${SCRIPT_DIR}/logs"
 

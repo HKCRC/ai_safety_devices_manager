@@ -106,6 +106,7 @@ class DevicesManagerClient {
   void applySpeakerControlByAlert(const ai_safety_common::AlertMessage& alert);
   bool applySpeakerMode(SpeakerMode mode, bool quiet = false);
   void applyBatteryButtonControl(std::uint8_t raw_cmd, bool force_send = false);
+  bool isBatteryButtonCommandOutOfSync(PowerCommand expected_cmd);
   void restoreBatteryButtonPowerStateFromRelays(bool log_output = true);
   static const char* toSpeakerCtlArg(SpeakerMode mode);
 

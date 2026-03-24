@@ -159,6 +159,7 @@ void DevicesManagerClient::applySpeakerControlByAlert(const ai_safety_common::Al
 }
 
 void DevicesManagerClient::applyBatteryButtonControl(std::uint8_t raw_cmd, bool force_send) {
+  (void)force_send;
   if (!impl_) return;
   if (raw_cmd > static_cast<std::uint8_t>(PowerCommand::PowerOff)) return;
 
@@ -179,6 +180,51 @@ void DevicesManagerClient::applyBatteryButtonControl(std::uint8_t raw_cmd, bool 
     impl_->setPowerCommand(cmd);
     last_battery_button_cmd_ = cmd;
   }
+}
+
+bool DevicesManagerClient::isBatteryButtonCommandOutOfSync(PowerCommand expected_cmd) {
+  if (!impl_) return false;
+  if (!(expected_cmd == PowerCommand::PowerOn || expected_cmd == PowerCommand::PowerOff)) {
+    return false;
+  }
+
+#ifdef ASC_ENABLE_IO_RELAY
+  if (!battery_button_relay_channels_.empty()) {
+    io_relay::IoRelayCore* relay = impl_->ioRelay();
+    if (relay) {
+      bool any_on = false;
+      bool any_off = false;
+      for (size_t i = 0; i < battery_button_relay_channels_.size(); ++i) {
+        bool on = false;
+        if (!relay->getRelayState(battery_button_relay_channels_[i], &on)) {
+          return impl_->getPowerCommand() != expected_cmd;
+        }
+        any_on = any_on || on;
+        any_off = any_off || !on;
+      }
+
+      const PowerCommand actual_cmd = any_on ? PowerCommand::PowerOn : PowerCommand::PowerOff;
+      const bool mismatch = (actual_cmd != expected_cmd);
+      if (mismatch) {
+        const PowerCommand previous_cmd = impl_->getPowerCommand();
+        impl_->setPowerCommand(actual_cmd);
+        last_battery_button_cmd_ = actual_cmd;
+        if (previous_cmd != actual_cmd) {
+          std::cout << "[runtime] detect power state mismatch from relays: expected="
+                    << (expected_cmd == PowerCommand::PowerOn ? "on" : "off")
+                    << " actual=" << (actual_cmd == PowerCommand::PowerOn ? "on" : "off");
+          if (any_on && any_off) {
+            std::cout << " (partial relay state)";
+          }
+          std::cout << "\n";
+        }
+      }
+      return mismatch;
+    }
+  }
+#endif
+
+  return impl_->getPowerCommand() != expected_cmd;
 }
 
 void DevicesManagerClient::restoreBatteryButtonPowerStateFromRelays(bool log_output) {
@@ -253,9 +299,10 @@ void DevicesManagerClient::notifyThreadFunc() {
           if (cmd == PowerCommand::None) {
             last_received_battery_button_cmd_.reset();
           } else if (!last_received_battery_button_cmd_.has_value() ||
-                     last_received_battery_button_cmd_.value() != cmd) {
+                     last_received_battery_button_cmd_.value() != cmd ||
+                     isBatteryButtonCommandOutOfSync(cmd)) {
             last_received_battery_button_cmd_ = cmd;
-            applyBatteryButtonControl(raw_cmd);
+            applyBatteryButtonControl(raw_cmd, true);
           }
         }
       }

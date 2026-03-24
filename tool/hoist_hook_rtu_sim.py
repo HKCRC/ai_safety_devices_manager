@@ -75,11 +75,12 @@ class HoistHookState:
         self.valid_mask = 0x0003  # 0x0003
         self.uid_base = 0xA1B20000
         self.heartbeat = 1
+        self.volume = 20  # 0x0067
+        self.time_sync_hhmm = 0  # 0x0074, high byte=hour low byte=minute
 
     def _hook_status_regs_100_110(self):
         battery_raw = 5870
         remain_discharge_min = 240
-        volume = 20
         work_mode = 1
         charging_flag = 0
         remain_charge_min = 0
@@ -87,12 +88,11 @@ class HoistHookState:
         current_raw = 112
 
         horn_status = 1 if (self.speaker_7m or self.speaker_3m) else 0
-        self.heartbeat = (self.heartbeat + 1) & 0xFFFF
         return {
             0x0064: 1 if self.warning_light else 0,
             0x0065: horn_status,
             0x0066: battery_raw,
-            0x0067: volume,
+            0x0067: self.volume,
             0x0068: self.heartbeat,
             0x0069: remain_discharge_min,
             0x006A: work_mode,
@@ -134,6 +134,8 @@ class HoistHookState:
                         out.append(rfid_regs[a - 0x0004])
                     elif 0x0064 <= a <= 0x006E:
                         out.append(status_regs.get(a, 0))
+                    elif a == 0x0074:
+                        out.append(self.time_sync_hhmm)
                     else:
                         out.append(0)
             elif unit_id == self.power_uid:
@@ -163,6 +165,18 @@ class HoistHookState:
                 return True
             if addr == 0x0003:
                 self.valid_mask = value & 0x00FF
+                return True
+            if addr == 0x0067:
+                # Simulate writable speaker volume register DEC103.
+                self.volume = max(0, min(30, value & 0xFFFF))
+                return True
+            if addr == 0x0068:
+                # Simulate writable heartbeat register DEC104.
+                self.heartbeat = value & 0xFFFF
+                return True
+            if addr == 0x0074:
+                # Simulate writable time-sync register DEC116.
+                self.time_sync_hhmm = value & 0xFFFF
                 return True
             return False
 

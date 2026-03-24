@@ -91,11 +91,15 @@ class LidarInstanceServer:
         self._sim_start_ts = time.monotonic()
         self._phase_bias = 0.0 if self.id.lower() == "front" else 1.7
 
-        # Keep endpoint-selection semantics aligned with Interface::buildLidarEndpoint():
-        # mode=server -> connect/listen via local_ip/local_port
-        # otherwise   -> connect/listen via device_ip/device_port
-        endpoint_ip = self.local_ip if self.mode == "server" else self.device_ip
-        endpoint_port = self.local_port if self.mode == "server" else self.device_port
+        # Keep simulator role aligned with Interface semantics:
+        # - mode=server: manager listens on local_ip/local_port, simulator should connect as device.
+        # - mode=client: manager connects to device_ip/device_port, simulator should listen as device.
+        if self.mode == "server":
+            endpoint_ip = self.local_ip
+            endpoint_port = self.local_port
+        else:
+            endpoint_ip = self.device_ip
+            endpoint_port = self.device_port
 
         # CLI overrides still have highest priority for quick bring-up.
         self.host = default_host if default_host else endpoint_ip
@@ -128,12 +132,32 @@ class LidarInstanceServer:
         expect = checksum_send(frame[:7])
         return frame[7] == expect
 
-    def serve_client_mode(self):
+    def _serve_connected_peer(self, conn, peer_desc: str):
+        self._conn = conn
+        print(f"[spd_sim:{self.id}] connected {peer_desc}")
+        try:
+            while self.running:
+                data = conn.recv(256)
+                if not data:
+                    break
+                if self._try_parse_frame(data):
+                    conn.sendall(self._build_single_reply())
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._conn = None
+            print(f"[spd_sim:{self.id}] disconnected")
+
+    def serve_listen_mode(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind((self.host, self.port))
         self._sock.listen(4)
-        print(f"[spd_sim:{self.id}] mode=client-sim server listen={self.host}:{self.port}")
+        print(f"[spd_sim:{self.id}] mode=client device listen={self.host}:{self.port}")
 
         while self.running:
             try:
@@ -142,24 +166,32 @@ class LidarInstanceServer:
                 if self.running:
                     time.sleep(0.2)
                 continue
-            self._conn = conn
-            print(f"[spd_sim:{self.id}] connected by {addr}")
+            self._serve_connected_peer(conn, f"from manager {addr}")
+
+    def serve_connect_mode(self):
+        print(f"[spd_sim:{self.id}] mode=server device connect={self.host}:{self.port}")
+        while self.running:
+            conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                while self.running:
-                    data = conn.recv(256)
-                    if not data:
-                        break
-                    if self._try_parse_frame(data):
-                        conn.sendall(self._build_single_reply())
+                conn.connect((self.host, self.port))
             except Exception:
-                pass
-            finally:
                 try:
                     conn.close()
                 except Exception:
                     pass
-                self._conn = None
-                print(f"[spd_sim:{self.id}] disconnected")
+                if self.running:
+                    time.sleep(0.5)
+                continue
+            self._serve_connected_peer(conn, f"to manager {self.host}:{self.port}")
+            if self.running:
+                time.sleep(0.5)
+
+    def serve(self):
+        if self.mode == "server":
+            self.serve_connect_mode()
+            return
+        self.serve_listen_mode()
 
     def close(self):
         self.running = False
@@ -237,12 +269,12 @@ def main():
         for i, one in enumerate(instances):
             sim = LidarInstanceServer(one, args.host, 0)
             sims.append(sim)
-            t = threading.Thread(target=sim.serve_client_mode, daemon=True)
+            t = threading.Thread(target=sim.serve, daemon=True)
             t.start()
             threads.append(t)
             print(
                 f"[spd_sim] instance[{i}] id={sim.id} mode={sim.mode} "
-                f"device={sim.device_ip}:{sim.device_port} listen={sim.host}:{sim.port} "
+                f"device={sim.device_ip}:{sim.device_port} endpoint={sim.host}:{sim.port} "
                 f"distance_mm={sim.distance_mm}"
             )
         while True:

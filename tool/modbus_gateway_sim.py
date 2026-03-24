@@ -90,6 +90,9 @@ class GatewayState:
             0x0000: 5870,               # SOC 58.70%
             0x0001: i16_to_u16(112),    # current 1.12A
             0x0002: 5240,               # voltage 52.40V
+            0x0003: 1200,               # remaining capacity 120.0Ah
+            0x0004: 2000,               # full capacity 200.0Ah
+            0x0009: 1,                  # charge mode/status
             0x0007: 240,                # remaining discharge min
             0x0008: 60,                 # remaining charge min
             0x000A: 1,                  # charge MOS on
@@ -145,10 +148,15 @@ class GatewayState:
 
         remain_discharge = int(max(0.0, (soc_pct / 100.0) * 360.0))
         remain_charge = int(max(0.0, ((100.0 - soc_pct) / 100.0) * 180.0))
+        full_capacity_ah_tenths = 2000
+        remain_capacity_ah_tenths = int((soc_pct / 100.0) * full_capacity_ah_tenths)
 
         self.battery_regs[0x0000] = int(soc_pct * 100.0)  # SOC: 0.01%
         self.battery_regs[0x0001] = i16_to_u16(int(current_a * 100.0))  # 0.01A signed
         self.battery_regs[0x0002] = int(voltage_v * 100.0)  # 0.01V
+        self.battery_regs[0x0003] = remain_capacity_ah_tenths
+        self.battery_regs[0x0004] = full_capacity_ah_tenths
+        self.battery_regs[0x0009] = 1 if charging else 0
         self.battery_regs[0x0007] = remain_discharge
         self.battery_regs[0x0008] = remain_charge if charging else 0
         self.battery_regs[0x000A] = 1 if charging else 0
