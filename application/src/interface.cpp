@@ -1486,7 +1486,7 @@ Status Interface::init() {
     const std::string id = cfg.id;
     lidar->on_log.connect([](const std::string&) {});  // 静默，避免轮询刷屏
     lidar->on_frame.connect([this, id, cfg](const spd_lidar::SpdLidarFrame& frame) {
-      const double distance_m = static_cast<double>(frame.data) / 1000.0;
+      const double distance_m = static_cast<double>(frame.data) / 10.0;
       const bool lidar_value_valid = (frame.data != 65535u);
       if (frame.valid_header && frame.checksum_ok && lidar_value_valid) {
         trolley_lidar_has_valid_frame_.store(true, std::memory_order_relaxed);
