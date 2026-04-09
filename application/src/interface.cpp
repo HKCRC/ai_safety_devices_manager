@@ -1095,6 +1095,20 @@ void Interface::startSnapshotPrinter() {
 
 void Interface::updateTrolleyStateFromDrivers() {
   DeviceStatus data = getDeviceStatus();
+  bool encoder_ok = false;
+
+#ifdef ASC_ENABLE_MULTI_TURN_ENCODER
+  // Keep crane distance updated from encoder whenever encoder data is valid,
+  // even if trolley power/battery state currently maps to Standby/Offline.
+  if (multi_turn_encoder_) {
+    const multi_turn_encoder::MultiTurnEncoderCore::LatestData latest =
+        multi_turn_encoder_->getLatest();
+    encoder_ok = latest.valid && latest.connected;
+    if (encoder_ok) {
+      updateCraneStateFromEncoder(latest.turns_calibrated);
+    }
+  }
+#endif
 
 #ifdef ASC_ENABLE_BATTERY
   // 未启用电池功能或电池驱动未实例化：保持 Unknown（表示此功能不适用/未配置）
@@ -1148,18 +1162,6 @@ void Interface::updateTrolleyStateFromDrivers() {
     setDeviceStatus(data);
     return;
   }
-
-  bool encoder_ok = false;
-#ifdef ASC_ENABLE_MULTI_TURN_ENCODER
-  if (multi_turn_encoder_) {
-    const multi_turn_encoder::MultiTurnEncoderCore::LatestData latest =
-        multi_turn_encoder_->getLatest();
-    encoder_ok = latest.valid && latest.connected;
-    if (encoder_ok) {
-      updateCraneStateFromEncoder(latest.turns_calibrated);
-    }
-  }
-#endif
 
   bool lidar_ok = false;
 #ifdef ASC_ENABLE_SPD_LIDAR
