@@ -1022,9 +1022,23 @@ void Interface::startAutoQueryPolling() {
 #ifdef ASC_ENABLE_HOIST_HOOK
   add_task("hoist_hook", hoist_hook_defaults_.query_hz);
 #endif
+#ifdef ASC_ENABLE_MULTI_TURN_ENCODER
+  add_task("multi_turn_encoder", encoder_defaults_.query_hz);
+#endif
 #ifdef ASC_ENABLE_SPD_LIDAR
   add_task("spd_lidar", spd_lidar_query_hz_);
 #endif
+
+  {
+    std::lock_guard<std::mutex> lock(output_mutex_);
+    std::cout << "[auto_query] start, task_count=" << tasks.size() << std::endl;
+    for (size_t i = 0; i < tasks.size(); ++i) {
+      const auto period_ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(tasks[i].period).count();
+      std::cout << "[auto_query] task[" << i << "] sensor=" << tasks[i].sensor
+                << ", period_ms=" << period_ms << std::endl;
+    }
+  }
 
   if (!tasks.empty()) {
     auto_query_threads_.emplace_back([this, tasks]() mutable {
@@ -1040,9 +1054,14 @@ void Interface::startAutoQueryPolling() {
             updateSolarChargeStateFromDriver();
           } else if (tasks[i].sensor == "hoist_hook") {
             updateHookStateFromDriver();
+          } else if (tasks[i].sensor == "multi_turn_encoder") {
+            // Encoder polling tick should also drive aggregated trolley state update.
+            updateTrolleyStateFromDrivers();
           } else if (tasks[i].sensor == "spd_lidar") {
             // 单点激光雷达：发送 single 查询触发测距，响应经 on_frame 更新 groundToTrolley
             query("spd_lidar", std::vector<std::string>{"send", "all", "single"});
+            // Keep trolley state refreshed by lidar cadence as well.
+            updateTrolleyStateFromDrivers();
           }
           tasks[i].next_due = std::chrono::steady_clock::now() + tasks[i].period;
           ran = true;
@@ -1095,6 +1114,7 @@ void Interface::startSnapshotPrinter() {
 
 void Interface::updateTrolleyStateFromDrivers() {
   DeviceStatus data = getDeviceStatus();
+  const DeviceStatus::EquipmentState prev_state = data.trolleyState;
   bool encoder_ok = false;
   bool bypass_battery_power_gate = false;
 
@@ -1130,6 +1150,10 @@ void Interface::updateTrolleyStateFromDrivers() {
       const bool battery_ok = battery_->isOnline();
       if (!battery_ok) {
         data.trolleyState = DeviceStatus::EquipmentState::Offline;
+        if (prev_state != data.trolleyState) {
+          std::lock_guard<std::mutex> lock(output_mutex_);
+          std::cout << "[trolley_state] write Offline: battery offline" << std::endl;
+        }
         setDeviceStatus(data);
         return;
       }
@@ -1169,6 +1193,11 @@ void Interface::updateTrolleyStateFromDrivers() {
   if (!bypass_battery_power_gate &&
       (power_cmd == PowerCommand::PowerOff || power_cmd == PowerCommand::None)) {
     data.trolleyState = DeviceStatus::EquipmentState::Standby;
+    if (prev_state != data.trolleyState) {
+      std::lock_guard<std::mutex> lock(output_mutex_);
+      std::cout << "[trolley_state] write Standby: blocked by power command="
+                << static_cast<int>(power_cmd) << std::endl;
+    }
     setDeviceStatus(data);
     return;
   }
@@ -1178,11 +1207,21 @@ void Interface::updateTrolleyStateFromDrivers() {
   lidar_ok = trolley_lidar_has_valid_frame_.load(std::memory_order_relaxed);
 #endif
 
-  // 到这里说明小车电池在线（online），根据传感器数据区分 Active / Standby
-  if (encoder_ok || lidar_ok) {
+  // 到这里说明小车电池在线（online），要求编码器与激光雷达都有效才判定为 Active。
+  if (encoder_ok && lidar_ok) {
     data.trolleyState = DeviceStatus::EquipmentState::Active;
+    if (prev_state != data.trolleyState) {
+      std::lock_guard<std::mutex> lock(output_mutex_);
+      std::cout << "[trolley_state] write Active: encoder_ok=" << (encoder_ok ? "true" : "false")
+                << ", lidar_ok=" << (lidar_ok ? "true" : "false") << std::endl;
+    }
   } else {
     data.trolleyState = DeviceStatus::EquipmentState::Standby;
+    if (prev_state != data.trolleyState) {
+      std::lock_guard<std::mutex> lock(output_mutex_);
+      std::cout << "[trolley_state] write Standby: encoder_ok=" << (encoder_ok ? "true" : "false")
+                << ", lidar_ok=" << (lidar_ok ? "true" : "false") << std::endl;
+    }
   }
 
   setDeviceStatus(data);
