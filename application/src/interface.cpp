@@ -1096,6 +1096,7 @@ void Interface::startSnapshotPrinter() {
 void Interface::updateTrolleyStateFromDrivers() {
   DeviceStatus data = getDeviceStatus();
   bool encoder_ok = false;
+  bool bypass_battery_power_gate = false;
 
 #ifdef ASC_ENABLE_MULTI_TURN_ENCODER
   // Keep crane distance updated from encoder whenever encoder data is valid,
@@ -1111,53 +1112,62 @@ void Interface::updateTrolleyStateFromDrivers() {
 #endif
 
 #ifdef ASC_ENABLE_BATTERY
-  // 未启用电池功能或电池驱动未实例化：保持 Unknown（表示此功能不适用/未配置）
-  if (!battery_defaults_.enable || !battery_) {
-    data.trolleyState = DeviceStatus::EquipmentState::Unknown;
-    setDeviceStatus(data);
-    return;
+  // 电池功能未启用时按常供电设备处理：强制 Active + 满电。
+  if (!battery_defaults_.enable) {
+    data.trolleyBattery.percent = 100;
+    data.trolleyBattery.isCharging = false;
+    data.trolleyBattery.remainingMin = 0;
+    data.trolleyBattery.chargingTimeMin = 0;
+    data.trolleyBattery.voltageV = 0.0f;
+    data.trolleyBattery.currentA = 0.0f;
+    bypass_battery_power_gate = true;
   }
-
-  const bool battery_ok = battery_->isOnline();
-  if (!battery_ok) {
-    data.trolleyState = DeviceStatus::EquipmentState::Offline;
-    setDeviceStatus(data);
-    return;
-  }
-
-  {
-    battery::BatteryCore::Summary summary;
-    if (battery_->readSummary(&summary)) {
-      DeviceStatus::BatteryInfo info;
-      float soc = summary.soc_percent;
-      if (soc < 0.0f) soc = 0.0f;
-      if (soc > 100.0f) soc = 100.0f;
-      info.percent = static_cast<std::uint8_t>(soc + 0.5f);
-      info.voltageV = summary.voltage_v;
-      info.currentA = summary.current_a;
-      info.remainingMin = summary.remaining_discharge_min;
-      info.chargingTimeMin = summary.remaining_charge_min;
-
-      bool is_charging = false;
-      const float current_a = summary.current_a;
-      if (summary.has_charge_mos) {
-        if (summary.charge_mos != 0) {
-          is_charging = (current_a > 0.05f) ||
-                        (current_a > -0.05f && current_a < 0.05f);
-        }
-      } else {
-        if (current_a > 0.05f) {
-          is_charging = true;
-        }
+  if (battery_defaults_.enable) {
+    // 已启用电池功能但驱动未实例化：继续用传感器判定小车状态。
+    if (!battery_) {
+      bypass_battery_power_gate = true;
+    } else {
+      const bool battery_ok = battery_->isOnline();
+      if (!battery_ok) {
+        data.trolleyState = DeviceStatus::EquipmentState::Offline;
+        setDeviceStatus(data);
+        return;
       }
-      info.isCharging = is_charging;
-      data.trolleyBattery = info;
+
+      battery::BatteryCore::Summary summary;
+      if (battery_->readSummary(&summary)) {
+        DeviceStatus::BatteryInfo info;
+        float soc = summary.soc_percent;
+        if (soc < 0.0f) soc = 0.0f;
+        if (soc > 100.0f) soc = 100.0f;
+        info.percent = static_cast<std::uint8_t>(soc + 0.5f);
+        info.voltageV = summary.voltage_v;
+        info.currentA = summary.current_a;
+        info.remainingMin = summary.remaining_discharge_min;
+        info.chargingTimeMin = summary.remaining_charge_min;
+
+        bool is_charging = false;
+        const float current_a = summary.current_a;
+        if (summary.has_charge_mos) {
+          if (summary.charge_mos != 0) {
+            is_charging = (current_a > 0.05f) ||
+                          (current_a > -0.05f && current_a < 0.05f);
+          }
+        } else {
+          if (current_a > 0.05f) {
+            is_charging = true;
+          }
+        }
+        info.isCharging = is_charging;
+        data.trolleyBattery = info;
+      }
     }
   }
 #endif
 
   const PowerCommand power_cmd = getPowerCommand();
-  if (power_cmd == PowerCommand::PowerOff || power_cmd == PowerCommand::None) {
+  if (!bypass_battery_power_gate &&
+      (power_cmd == PowerCommand::PowerOff || power_cmd == PowerCommand::None)) {
     data.trolleyState = DeviceStatus::EquipmentState::Standby;
     setDeviceStatus(data);
     return;
