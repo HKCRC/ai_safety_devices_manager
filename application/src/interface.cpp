@@ -1207,7 +1207,7 @@ void Interface::updateTrolleyStateFromDrivers() {
   lidar_ok = trolley_lidar_has_valid_frame_.load(std::memory_order_relaxed);
 #endif
 
-  // 到这里说明小车电池在线（online），要求编码器与激光雷达都有效才判定为 Active。
+  // 到这里说明小车电池在线（online），要求编码器有效且激光雷达通信有效（收到合法响应）才判定为 Active。
   if (encoder_ok && lidar_ok) {
     data.trolleyState = DeviceStatus::EquipmentState::Active;
     if (prev_state != data.trolleyState) {
@@ -1539,8 +1539,10 @@ Status Interface::init() {
     lidar->on_frame.connect([this, id, cfg](const spd_lidar::SpdLidarFrame& frame) {
       const double distance_m = static_cast<double>(frame.data) / 10.0;
       const bool lidar_value_valid = (frame.data != 65535u);
-      if (frame.valid_header && frame.checksum_ok && lidar_value_valid) {
+      if (frame.valid_header && frame.checksum_ok) {
         trolley_lidar_has_valid_frame_.store(true, std::memory_order_relaxed);
+      }
+      if (frame.valid_header && frame.checksum_ok && lidar_value_valid) {
         constexpr double kPi = 3.14159265358979323846;
         const double angle_rad = cfg.vertical_angle_to_vertical_deg * kPi / 180.0;
         const double projected_m = distance_m * std::cos(angle_rad);
